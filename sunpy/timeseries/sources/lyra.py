@@ -178,6 +178,12 @@ class LYRATimeSeries(GenericTimeSeries):
         data = pandas.DataFrame(table, index=times)
         data.sort_index(inplace=True)
 
+        metadata.update({'instrume': 'LYRA'})
+        metadata.update({'obsrvtry': 'PROBA2'})
+        metadata.update({'telescope': ['Lyman alpha', 'Herzberg cont.', 'Al filter', 'Zr filter']})
+        metadata.update({'wavelnth': [[120, 123], [190, 222], [17, 80], [6, 20]]})
+        metadata.update({'waveunit': 'nm'})
+
         # Add the units data
         units = OrderedDict([('CHANNEL1', u.W/u.m**2),
                              ('CHANNEL2', u.W/u.m**2),
