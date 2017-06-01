@@ -150,6 +150,13 @@ class NOAAIndicesTimeSeries(GenericTimeSeries):
             data = data.drop('mm',1)
             data = data.drop('yyyy',1)
 
+            metadata = MetaDict({'comments': header})
+            metadata.update({'unit': units})
+            metadata.update({'instrume': 'NOAA'})
+            metadata.update({'obsrvtry': 'NOAA'})
+            metadata.update({'telescope': None})
+            metadata.update({'wavelnth': ''})
+            metadata.update({'waveunit': ''})
             # Add the units data
             units = OrderedDict([('sunspot SWO', u.dimensionless_unscaled),
                                  ('sunspot RI', u.dimensionless_unscaled),
@@ -162,7 +169,7 @@ class NOAAIndicesTimeSeries(GenericTimeSeries):
                                  ('geomagnetic smooth', u.dimensionless_unscaled)])
             # Todo: check units
             # Todo: fix header/meta, it's returning rubbish.
-            return data, MetaDict({'comments': header}), units
+            return data, metadata, units
 
 
 
@@ -267,6 +274,14 @@ class NOAAPredictIndicesTimeSeries(GenericTimeSeries):
             data = data.drop('mm',1)
             data = data.drop('yyyy',1)
 
+            meta = MetaDict({'comments': header})
+            meta.update({'UNIT': units})
+            meta.update({'INSTRUME': 'NOAA Prediction'})
+            meta.update({'obsrvtry': 'NOAA'})
+            meta.update({'telescope': None})
+            meta.update({'wavelnth': ''})
+            meta.update({'waveunit': ''})
+
             # Add the units data
             units = OrderedDict([('sunspot', u.dimensionless_unscaled),
                                  ('sunspot low', u.dimensionless_unscaled),
@@ -275,7 +290,7 @@ class NOAAPredictIndicesTimeSeries(GenericTimeSeries):
                                  ('radio flux low', u.W/u.m**2),
                                  ('radio flux high', u.W/u.m**2)])
             # Todo: check units used.
-            return data, MetaDict({'comments': header}), units
+            return data, meta, units
 
     @classmethod
     def is_datasource_for(cls, **kwargs):
