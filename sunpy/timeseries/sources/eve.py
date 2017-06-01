@@ -61,7 +61,7 @@ class EVESpWxTimeSeries(GenericTimeSeries):
     # Class attribute used to specify the source class of the TimeSeries.
     _source = 'eve'
 
-    def peek(self, column=None, **kwargs):
+    def plot(self, column=None, **kwargs):
         """Plots the time series in a new figure. An example is shown below.
 
         .. plot::

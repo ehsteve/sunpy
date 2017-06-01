@@ -61,7 +61,7 @@ class LYRATimeSeries(GenericTimeSeries):
     # Class attribute used to specify the source class of the TimeSeries.
     _source = 'lyra'
 
-    def peek(self, names=3, **kwargs):
+    def plot(self, names=3, **kwargs):
         """Plots the LYRA data. An example is shown below.
 
         .. plot::

@@ -54,7 +54,7 @@ class XRSTimeSeries(GenericTimeSeries):
     # Class attribute used to specify the source class of the TimeSeries.
     _source = 'xrs'
 
-    def peek(self, title="GOES Xray Flux"):
+    def plot(self, title="GOES Xray Flux"):
         """Plots GOES XRS light curve is the usual manner. An example is shown
         below.
 

@@ -59,7 +59,7 @@ class RHESSISummaryTimeSeries(GenericTimeSeries):
     # Class attribute used to specify the source class of the TimeSeries.
     _source = 'rhessi'
 
-    def peek(self, title="RHESSI Observing Summary Count Rate", **kwargs):
+    def plot(self, title="RHESSI Observing Summary Count Rate", **kwargs):
         """Plots RHESSI Count Rate light curve. An example is shown below.
 
         .. plot::

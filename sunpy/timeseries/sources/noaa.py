@@ -53,7 +53,7 @@ class NOAAIndicesTimeSeries(GenericTimeSeries):
     # Class attribute used to specify the source class of the TimeSeries.
     _source = 'noaaindices'
 
-    def peek(self, type='sunspot SWO', **plot_args):
+    def plot(self, type='sunspot SWO', **plot_args):
         """Plots NOAA Indices as a function of time. An example is shown below.
 
         .. plot::
@@ -213,7 +213,7 @@ class NOAAPredictIndicesTimeSeries(GenericTimeSeries):
     # Class attribute used to specify the source class of the TimeSeries.
     _source = 'noaapredictindices'
 
-    def peek(self, **plot_args):
+    def plot(self, **plot_args):
         """Plots predicted NOAA Indices as a function of time. An example is shown below.
 
         .. plot::

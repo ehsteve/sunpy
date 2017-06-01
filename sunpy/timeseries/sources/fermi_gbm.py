@@ -60,7 +60,7 @@ class GBMSummaryTimeSeries(GenericTimeSeries):
     # Class attribute used to specify the source class of the TimeSeries.
     _source = 'gbmsummary'
 
-    def peek(self, **kwargs):
+    def plot(self, **kwargs):
         """Plots the GBM lightcurve TimeSeries. An example can be seen below.
 
         .. plot::
