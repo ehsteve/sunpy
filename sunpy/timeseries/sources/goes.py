@@ -194,6 +194,10 @@ class XRSTimeSeries(GenericTimeSeries):
         data = DataFrame({'xrsa': newxrsa, 'xrsb': newxrsb}, index=times)
         data.sort_index(inplace=True)
 
+        header.update({'obsrvtry': header.get('telescop')})
+        header.update({'wavelnth': [[0.5, 4], [1.0, 8]]})
+        header.update({'waveunit': 'angstrom'})
+
         # Add the units
         units = OrderedDict([('xrsa', u.W/u.m**2),
                              ('xrsb', u.W/u.m**2)])
