@@ -181,6 +181,12 @@ class EVESpWxTimeSeries(GenericTimeSeries):
         if is_missing_data :   #If missing data specified in header
             data[data == float(missing_data_val)] = numpy.nan
 
+        meta.update({'instrume': 'SDO/EVE'})
+        meta.update({'obsrvtry': 'SDO'})
+        meta.update({'telescope': 'EVE'})
+        meta.update({'wavelnth': ''})
+        meta.update({'waveunit': ''})
+
         # Add the units data
         units = OrderedDict([('XRS-B proxy', u.W/u.m**2),
                              ('XRS-A proxy', u.W/u.m**2),
