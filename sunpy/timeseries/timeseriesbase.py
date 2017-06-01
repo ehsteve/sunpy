@@ -139,6 +139,13 @@ class GenericTimeSeries:
 # #### Attribute definitions #### #
 
     @property
+    def plot_styles(self):
+        """
+        Returns the types of plot available.
+        """
+        return self._get_plot_styles()
+
+    @property
     def source(self):
         """Returns a string/object used to specify the source class of the TimeSeries."""
         return self._source
@@ -437,9 +444,12 @@ class GenericTimeSeries:
         # Check we have a timeseries valid for plotting
         self._validate_data_for_ploting()
 
-        # Now make the plot
         figure = plt.figure()
-        self.plot(**kwargs)
+
+
+        for plot_num, plot_style in enumerate(self.plot_styles):
+            ax = figure.add_subplot(len(self.plot_types), 1, plot_num + 1)
+            self.plot(axes=ax, plot_type=plot_type)
         figure.show()
 
         return figure
