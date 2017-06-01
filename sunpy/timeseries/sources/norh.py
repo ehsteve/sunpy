@@ -108,6 +108,10 @@ class NoRHTimeSeries(GenericTimeSeries):
         # For these NoRH files, the time series data is recorded in the primary
         # HDU
         data = hdulist[0].data
+        header.update({'instrume': header.get('telescope')})
+        header.update({'obsrvtry': header.get('origin')})
+        header.update({'wavelnth': '17'})
+        header.update({'waveunit': 'GHz'})
 
         # No explicit time array in FITS file, so construct the time array from
         # the FITS header
@@ -119,10 +123,8 @@ class NoRHTimeSeries(GenericTimeSeries):
         norh_time = []
         for s in sec_array:
             norh_time.append(obs_start_time + datetime.timedelta(0,s))
-
         # Add the units data
         units = OrderedDict([('Correlation Coefficient', u.dimensionless_unscaled)])
-        # Todo: check units used.
         return pandas.DataFrame(data, index=norh_time, columns=('Correlation Coefficient',)), header, units
 
     @classmethod
