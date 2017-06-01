@@ -127,6 +127,12 @@ class RHESSISummaryTimeSeries(GenericTimeSeries):
         header, d = rhessi.parse_obssumm_hdulist(hdulist)
         header = MetaDict(OrderedDict(header))
         data = DataFrame(d['data'], columns=d['labels'], index=d['time'])
+        header.update({'UNIT': ['counts s^-1 detector^-1'] * len(data.columns)})
+        header.update({'instrume': 'RHESSI'})
+        header.update({'obsrvtry': 'RHESSI'})
+        header.update({'telescope': 'RHESSI'})
+        header.update({'wavelnth': ['3', '6', '12', '25', '50', '100', '300', '800', '7000']})
+        header.update({'waveunit': 'keV'})
         # Add the units data
         units = OrderedDict([('3 - 6 keV', u.ct / u.s / u.Unit('detector')),
                              ('6 - 12 keV', u.ct / u.s / u.Unit('detector')),
