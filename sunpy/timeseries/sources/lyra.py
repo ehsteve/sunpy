@@ -1,7 +1,6 @@
 """
 This module provides Proba-2 `~sunpy.timeseries.TimeSeries` source.
 """
-import sys
 from collections import OrderedDict
 
 import pandas
@@ -13,7 +12,6 @@ import sunpy.io
 from sunpy import config
 from sunpy.time import parse_time
 from sunpy.timeseries.timeseriesbase import GenericTimeSeries
-from sunpy.util.decorators import deprecate_positional_args_since
 from sunpy.util.metadata import MetaDict
 from sunpy.visualization import peek_show
 
@@ -95,7 +93,6 @@ class LYRATimeSeries(GenericTimeSeries):
         return axes
 
     @peek_show
-    @deprecate_positional_args_since("4.1")
     def peek(self, *, title=None, columns=None, names=3, **kwargs):
         """
         Displays the LYRA data by calling `~sunpy.timeseries.sources.lyra.LYRATimeSeries.plot`.
@@ -135,7 +132,7 @@ class LYRATimeSeries(GenericTimeSeries):
         filepath : `str`
             The path to the file you want to parse.
         """
-        hdus = sunpy.io.read_file(filepath)
+        hdus = sunpy.io._file_tools.read_file(filepath)
         return cls._parse_hdus(hdus)
 
     @classmethod
@@ -170,11 +167,7 @@ class LYRATimeSeries(GenericTimeSeries):
         table = {}
 
         for i, col in enumerate(fits_record.columns[1:-1]):
-            # temporary patch for big-endian data bug on pandas 0.13
-            if fits_record.field(i+1).dtype.byteorder == '>' and sys.byteorder == 'little':
-                table[col.name] = fits_record.field(i + 1).byteswap().newbyteorder()
-            else:
-                table[col.name] = fits_record.field(i + 1)
+            table[col.name] = fits_record.field(i + 1)
 
         # Return the header and the data
         times.precision = 9

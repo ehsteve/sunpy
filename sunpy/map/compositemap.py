@@ -57,7 +57,7 @@ class CompositeMap:
     >>> import sunpy.data.sample  # doctest: +REMOTE_DATA
     >>> comp_map = sunpy.map.Map(sunpy.data.sample.AIA_171_IMAGE,
     ...                          sunpy.data.sample.EIT_195_IMAGE,
-    ...                          composite=True)  # doctest: +REMOTE_DATA
+    ...                          composite=True)  # doctest: +REMOTE_DATA +IGNORE_WARNINGS
     >>> comp_map.add_map(sunpy.map.Map(sunpy.data.sample.RHESSI_IMAGE))  # doctest: +REMOTE_DATA
     >>> comp_map.peek()  # doctest: +SKIP
 
@@ -525,7 +525,7 @@ class CompositeMap:
             if draw_grid:
                 self.draw_grid(axes=axes)
 
-        elif isinstance(draw_grid, (int, float)):
+        elif isinstance(draw_grid, int | float):
             self.draw_grid(axes=axes, grid_spacing=draw_grid)
         else:
             raise TypeError("draw_grid should be bool, int, long or float")

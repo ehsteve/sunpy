@@ -4,14 +4,15 @@ Common solar physics coordinate systems.
 This submodule implements various solar physics coordinate frames for use with
 the `astropy.coordinates` module.
 """
+import os
 import re
 import traceback
-from contextlib import contextmanager
 
 import numpy as np
 
 import astropy.units as u
-from astropy.coordinates import ConvertError, QuantityAttribute
+from astropy.constants import R_earth
+from astropy.coordinates import Attribute, ConvertError, Latitude, Longitude, QuantityAttribute
 from astropy.coordinates.baseframe import BaseCoordinateFrame, RepresentationMapping
 from astropy.coordinates.representation import (
     CartesianDifferential,
@@ -22,21 +23,23 @@ from astropy.coordinates.representation import (
     UnitSphericalRepresentation,
 )
 from astropy.time import Time
+from astropy.utils.data import download_file
 
 from sunpy import log
 from sunpy.sun.constants import radius as _RSUN
 from sunpy.time.time import _variables_for_parse_time_docstring
-from sunpy.util.decorators import add_common_docstring
+from sunpy.util.decorators import add_common_docstring, deprecated, sunpycontextmanager
 from sunpy.util.exceptions import warn_user
 from .frameattributes import ObserverCoordinateAttribute, TimeFrameAttributeSunPy
 
 _J2000 = Time('J2000.0', scale='tt')
 
-__all__ = ['SunPyBaseCoordinateFrame', 'BaseHeliographic',
+__all__ = ['SunPyBaseCoordinateFrame', 'BaseHeliographic', 'BaseMagnetic',
            'HeliographicStonyhurst', 'HeliographicCarrington',
-           'Heliocentric', 'Helioprojective',
+           'Heliocentric', 'Helioprojective', 'HelioprojectiveRadial',
            'HeliocentricEarthEcliptic', 'GeocentricSolarEcliptic',
-           'HeliocentricInertial', 'GeocentricEarthEquatorial']
+           'HeliocentricInertial', 'GeocentricEarthEquatorial',
+           'Geomagnetic', 'SolarMagnetic', 'GeocentricSolarMagnetospheric']
 
 
 def _frame_parameters():
@@ -98,6 +101,13 @@ def _frame_parameters():
     ret['equinox'] = (f"equinox : {_variables_for_parse_time_docstring()['parse_time_types']}\n"
                       "        The date for the mean vernal equinox.\n"
                       "        Defaults to the J2000.0 equinox.")
+    ret['magnetic_model'] = ("magnetic_model : `str`\n"
+                             "        The IGRF model to use for determining the orientation of\n"
+                             "        Earth's magnetic dipole pole.  The supported options are\n"
+                             "        ``'igrf13'`` (default), ``'igrf12'``, ``'igrf11'``, and\n"
+                             "        ``'igrf10'``.")
+    ret['igrf_reference'] = ("* `International Geomagnetic Reference Field (IGRF) "
+                             "<https://www.ngdc.noaa.gov/IAGA/vmod/igrf.html>`__")
 
     return ret
 
@@ -150,7 +160,7 @@ class SunPyBaseCoordinateFrame(BaseCoordinateFrame):
 
         # If a frame wrap angle is set, use that wrap angle for any spherical representations.
         if self._wrap_angle is not None and \
-           isinstance(data, (UnitSphericalRepresentation, SphericalRepresentation)):
+           isinstance(data, UnitSphericalRepresentation | SphericalRepresentation):
             data.lon.wrap_angle = self._wrap_angle
         return data
 
@@ -166,30 +176,6 @@ class SunPyBaseCoordinateFrame(BaseCoordinateFrame):
     def _is_2d(self):
         return (self._data is not None and self._data.norm().unit is u.one
                 and u.allclose(self._data.norm(), 1*u.one))
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-
-        # TODO: Remove this after the minimum Astropy dependency includes astropy/astropy#12005
-        cls._fix_property_docstrings()
-
-    @classmethod
-    def _fix_property_docstrings(cls):
-        # This class method adds docstrings to properties dynamically created by
-        # BaseCoordinateFrame.__init_subclass__().  Accordingly, this method needs to itself be
-        # called from SunPyBaseCoordinateFrame.__init_subclass__() to work for our subclasses.
-        property_docstrings = {
-            'default_representation': "Default representation for position data",
-            'default_differential': "Default representation for differential data",
-            'frame_specific_representation_info': "Mapping for frame-specific component names",
-        }
-        for prop, docstring in property_docstrings.items():
-            if getattr(cls, prop).__doc__ is None:
-                setattr(getattr(cls, prop), '__doc__', docstring)
-
-
-# TODO: Remove this after the minimum Astropy dependency includes astropy/astropy#12005
-SunPyBaseCoordinateFrame._fix_property_docstrings()
 
 
 class BaseHeliographic(SunPyBaseCoordinateFrame):
@@ -293,12 +279,12 @@ class HeliographicStonyhurst(BaseHeliographic):
     def _apply_diffrot(self, duration, rotation_model):
         oldrepr = self.spherical
 
-        from sunpy.physics.differential_rotation import diff_rot
+        from sunpy.sun.models import differential_rotation
         log.debug(f"Applying {duration} of solar rotation")
-        newlon = oldrepr.lon + diff_rot(duration,
-                                        oldrepr.lat,
-                                        rot_type=rotation_model,
-                                        frame_time='sidereal')
+        newlon = oldrepr.lon + differential_rotation(duration,
+                                                     oldrepr.lat,
+                                                     model=rotation_model,
+                                                     frame_time='sidereal')
         newrepr = SphericalRepresentation(newlon, oldrepr.lat, oldrepr.distance)
 
         return self.realize_frame(newrepr)
@@ -583,27 +569,21 @@ class Helioprojective(SunPyBaseCoordinateFrame):
         with np.errstate(invalid='ignore'):
             d = ((-1*b) - np.sqrt(b**2 - 4*c)) / 2  # use the "near" solution
 
-        if self._spherical_screen:
-            sphere_center = self._spherical_screen['center'].transform_to(self).cartesian
-            c = sphere_center.norm()**2 - self._spherical_screen['radius']**2
-            b = -2 * sphere_center.dot(rep)
-            # Ignore sqrt of NaNs
-            with np.errstate(invalid='ignore'):
-                dd = ((-1*b) + np.sqrt(b**2 - 4*c)) / 2  # use the "far" solution
-
-            d = np.fmin(d, dd) if self._spherical_screen['only_off_disk'] else dd
+        if self._assumed_screen:
+            d_screen = self._assumed_screen.calculate_distance(self)
+            d = np.fmin(d, d_screen) if self._assumed_screen.only_off_disk else d_screen
 
         # This warning can be triggered in specific draw calls when plt.show() is called
         # we can not easily prevent this, so we check the specific function is being called
         # within the stack trace.
         stack_trace = traceback.format_stack()
-        matching_string = 'wcsaxes.*_draw_grid'
+        matching_string = 'wcsaxes.*(_draw_grid|_update_ticks)'
         bypass = any([re.search(matching_string, string) for string in stack_trace])
         if not bypass and np.all(np.isnan(d)) and np.any(np.isfinite(cos_alpha)):
             warn_user("The conversion of these 2D helioprojective coordinates to 3D is all NaNs "
                       "because off-disk coordinates need an additional assumption to be mapped to "
                       "calculate distance from the observer. Consider using the context manager "
-                      "`Helioprojective.assume_spherical_screen()`.")
+                      "`SphericalScreen()`.")
 
         return self.realize_frame(SphericalRepresentation(lon=lon,
                                                           lat=lat,
@@ -688,73 +668,139 @@ class Helioprojective(SunPyBaseCoordinateFrame):
 
         return is_behind_observer | is_beyond_limb | (is_on_near_side & is_above_surface)
 
-    _spherical_screen = None
+    _assumed_screen = None
 
     @classmethod
-    @contextmanager
-    def assume_spherical_screen(cls, center, only_off_disk=False):
-        """
-        Context manager to interpret 2D coordinates as being on the inside of a spherical screen.
-
-        The radius of the screen is the distance between the specified ``center`` and Sun center.
-        This ``center`` does not have to be the same as the observer location for the coordinate
-        frame.  If they are the same, then this context manager is equivalent to assuming that the
-        helioprojective "zeta" component is zero.
-
-        This replaces the default assumption where 2D coordinates are mapped onto the surface of the
-        Sun.
-
-        Parameters
-        ----------
-        center : `~astropy.coordinates.SkyCoord`
-            The center of the spherical screen
-        only_off_disk : `bool`, optional
-            If `True`, apply this assumption only to off-disk coordinates, with on-disk coordinates
-            still mapped onto the surface of the Sun.  Defaults to `False`.
-
-        Examples
-        --------
-        .. minigallery:: sunpy.coordinates.Helioprojective.assume_spherical_screen
-
-        >>> import astropy.units as u
-        >>> from sunpy.coordinates import Helioprojective
-        >>> h = Helioprojective(range(7)*u.arcsec*319, [0]*7*u.arcsec,
-        ...                     observer='earth', obstime='2020-04-08')
-        >>> print(h.make_3d())
-        <Helioprojective Coordinate (obstime=2020-04-08T00:00:00.000, rsun=695700.0 km, observer=<HeliographicStonyhurst Coordinate for 'earth'>): (Tx, Ty, distance) in (arcsec, arcsec, AU)
-            [(   0., 0., 0.99660825), ( 319., 0., 0.99687244),
-             ( 638., 0., 0.99778472), ( 957., 0., 1.00103285),
-             (1276., 0.,        nan), (1595., 0.,        nan),
-             (1914., 0.,        nan)]>
-
-        >>> with Helioprojective.assume_spherical_screen(h.observer):
-        ...     print(h.make_3d())
-        <Helioprojective Coordinate (obstime=2020-04-08T00:00:00.000, rsun=695700.0 km, observer=<HeliographicStonyhurst Coordinate for 'earth'>): (Tx, Ty, distance) in (arcsec, arcsec, AU)
-            [(   0., 0., 1.00125872), ( 319., 0., 1.00125872),
-             ( 638., 0., 1.00125872), ( 957., 0., 1.00125872),
-             (1276., 0., 1.00125872), (1595., 0., 1.00125872),
-             (1914., 0., 1.00125872)]>
-
-        >>> with Helioprojective.assume_spherical_screen(h.observer, only_off_disk=True):
-        ...     print(h.make_3d())
-        <Helioprojective Coordinate (obstime=2020-04-08T00:00:00.000, rsun=695700.0 km, observer=<HeliographicStonyhurst Coordinate for 'earth'>): (Tx, Ty, distance) in (arcsec, arcsec, AU)
-            [(   0., 0., 0.99660825), ( 319., 0., 0.99687244),
-             ( 638., 0., 0.99778472), ( 957., 0., 1.00103285),
-             (1276., 0., 1.00125872), (1595., 0., 1.00125872),
-             (1914., 0., 1.00125872)]>
-        """
+    @sunpycontextmanager
+    @deprecated('6.0', alternative='sunpy.coordinates.screens.SphericalScreen')
+    def assume_spherical_screen(cls, center, only_off_disk=False, *, radius=None):
         try:
-            old_spherical_screen = cls._spherical_screen  # nominally None
-
-            center_hgs = center.transform_to(HeliographicStonyhurst(obstime=center.obstime))
-            cls._spherical_screen = {
-                'center': center,
-                'radius': center_hgs.radius,
-                'only_off_disk': only_off_disk
-            }
+            old_assumed_screen = cls._assumed_screen  # nominally None
+            from sunpy.coordinates import SphericalScreen
+            sph_screen = SphericalScreen(center, radius=radius, only_off_disk=only_off_disk)
+            cls._assumed_screen = sph_screen
             yield
         finally:
-            cls._spherical_screen = old_spherical_screen
+            cls._assumed_screen = old_assumed_screen
+
+
+@add_common_docstring(**_frame_parameters())
+class HelioprojectiveRadial(SunPyBaseCoordinateFrame):
+    """
+    A coordinate or frame in the Helioprojective Radial system.
+
+    This is an observer-based spherical coordinate system, with:
+
+    - ``psi`` is the position angle of the coordinate, measured eastward from solar
+      north
+    - ``delta`` is the declination angle, which is the impact angle (the angle
+      between the observer-Sun line and the observer-coordinate line) minus 90
+      degrees
+    - ``r`` is the observer-coordinate distance
+
+    .. note::
+        The declination angle, rather than the impact angle, is used as a component
+        in order to match the FITS WCS definition.  The impact angle can be readily
+        retrieved using the `theta` property.
+
+    Parameters
+    ----------
+    {data}
+    psi : `~astropy.coordinates.Angle` or `~astropy.units.Quantity`
+        The position angle. Not needed if ``data`` is given.
+    delta : `~astropy.coordinates.Angle` or `~astropy.units.Quantity`
+        The declination angle. Not needed if ``data`` is given.
+    r: `~astropy.coordinates.Angle` or `~astropy.units.Quantity`
+        The observer-coordinate distance.  Not needed if ``data`` is given.
+    {rsun}
+    {observer}
+    {common}
+
+    See Also
+    --------
+    Helioprojective
+
+    Examples
+    --------
+    >>> from astropy.coordinates import SkyCoord
+    >>> import sunpy.coordinates
+    >>> import astropy.units as u
+
+    >>> sc = SkyCoord(0*u.deg, -90*u.deg, 5*u.km,
+    ...               obstime="2010/01/01T00:00:00", observer="earth", frame="helioprojectiveradial")
+    >>> sc
+    <SkyCoord (HelioprojectiveRadial: obstime=2010-01-01T00:00:00.000, rsun=695700.0 km, observer=<HeliographicStonyhurst Coordinate for 'earth'>): (psi, delta, distance) in (deg, deg, km)
+        (0., -90., 5.)>
+    >>> sc.theta
+    <Angle 0. arcsec>
+
+    >>> sc = SkyCoord(30*u.deg, -89.9*u.deg,
+    ...               obstime="2010/01/01T00:00:00", observer="earth", frame="helioprojectiveradial")
+    >>> sc
+    <SkyCoord (HelioprojectiveRadial: obstime=2010-01-01T00:00:00.000, rsun=695700.0 km, observer=<HeliographicStonyhurst Coordinate for 'earth'>): (psi, delta) in deg
+        (30., -89.9)>
+    >>> sc.theta
+    <Angle 360. arcsec>
+
+    >>> sc = SkyCoord(CartesianRepresentation(1e5*u.km, -2e5*u.km, -1*u.AU),
+    ...               obstime="2011/01/05T00:00:50", observer="earth", frame="helioprojectiveradial")
+    >>> sc
+    <SkyCoord (HelioprojectiveRadial: obstime=2011-01-05T00:00:50.000, rsun=695700.0 km, observer=<HeliographicStonyhurst Coordinate for 'earth'>): (psi, delta, distance) in (deg, deg, km)
+        (296.56505118, -89.91435897, 1.49598038e+08)>
+    >>> sc.theta
+    <Angle 308.30772022 arcsec>
+
+    .. minigallery:: sunpy.coordinates.HelioprojectiveRadial
+    """
+    _wrap_angle = 360*u.deg
+
+    default_representation = SphericalRepresentation
+
+    frame_specific_representation_info = {
+        SphericalRepresentation: [RepresentationMapping('lon', 'psi', u.deg),
+                                  RepresentationMapping('lat', 'delta', u.deg),
+                                  RepresentationMapping('distance', 'distance', None)],
+        SphericalDifferential: [RepresentationMapping('d_lon', 'd_psi', u.deg/u.s),
+                                RepresentationMapping('d_lat', 'd_delta', u.deg/u.s),
+                                RepresentationMapping('d_distance', 'd_distance', u.km/u.s)],
+        UnitSphericalRepresentation: [RepresentationMapping('lon', 'psi', u.deg),
+                                      RepresentationMapping('lat', 'delta', u.deg)],
+    }
+
+    rsun = QuantityAttribute(default=_RSUN, unit=u.km)
+    observer = ObserverCoordinateAttribute(HeliographicStonyhurst)
+
+    @property
+    def theta(self):
+        """
+        Returns the impact angle, which is the declination angle plus 90 degrees.
+        """
+        return (90*u.deg + self.spherical.lat).to(u.arcsec)
+
+    def make_3d(self):
+        """
+        Returns a 3D version of this coordinate.
+
+        If the coordinate is 2D, the default assumption is that the coordinate is on
+        the surface of the Sun, and the distance component is calculated
+        accordingly.  Under this assumption, if the 2D coordinate is outside the
+        disk, the distance component will be NaN.
+
+        The assumption can be changed using one of the screens in
+        `sunpy.coordinates.screens`.
+
+        Returns
+        -------
+        `~sunpy.coordinates.frames.HelioprojectiveRadial`
+            The 3D version of this coordinate.
+        """
+        # Skip if we already are 3D
+        if not self._is_2d:
+            return self
+
+        # Make 3D by going through HPC, which thus will make use of any screen
+        hpc_frame = Helioprojective(obstime=self.obstime, observer=self.observer, rsun=self.rsun)
+        return self.transform_to(hpc_frame).make_3d().transform_to(self)
 
 
 @add_common_docstring(**_frame_parameters())
@@ -847,3 +893,186 @@ class GeocentricEarthEquatorial(SunPyBaseCoordinateFrame):
     Aberration due to Earth motion is not included.
     """
     equinox = TimeFrameAttributeSunPy(default=_J2000)
+
+
+class BaseMagnetic(SunPyBaseCoordinateFrame):
+    """
+    Base class for frames that rely on the Earth's magnetic model (MAG, SM, and GSM).
+
+    This class is not intended to be used directly and has no transformations defined.
+    """
+    magnetic_model = Attribute(default='igrf13')
+
+    @property
+    def _igrf_file(self):
+        if not self.magnetic_model.startswith("igrf"):
+            raise ValueError
+
+        # First look if the file is bundled in package
+        local_file = os.path.join(os.path.dirname(__file__), "data",
+                                  f"{self.magnetic_model}coeffs.txt")
+        if os.path.exists(local_file):
+            return local_file
+
+        # Otherwise download the file and cache it
+        return download_file("https://www.ngdc.noaa.gov/IAGA/vmod/coeffs/"
+                             f"{self.magnetic_model}coeffs.txt", cache=True)
+
+    @property
+    def _lowest_igrf_coeffs(self):
+        with open(self._igrf_file) as f:
+            while not (line := f.readline()).startswith('g/h'):
+                pass
+
+            years = list(map(float, line.split()[3:-1]))
+            g10s = list(map(float, f.readline().split()[3:]))
+            g11s = list(map(float, f.readline().split()[3:]))
+            h11s = list(map(float, f.readline().split()[3:]))
+
+        decimalyear = self.obstime.utc.decimalyear
+        if decimalyear < 1900.0:
+            raise ValueError
+
+        if decimalyear <= years[-1]:
+            # Use piecewise linear interpolation before the last year
+            g10 = np.interp(decimalyear, years, g10s[:-1])
+            g11 = np.interp(decimalyear, years, g11s[:-1])
+            h11 = np.interp(decimalyear, years, h11s[:-1])
+        else:
+            # Use secular variation beyond the last year
+            g10 = g10s[-2] + (decimalyear - years[-1]) * g10s[-1]
+            g11 = g11s[-2] + (decimalyear - years[-1]) * g11s[-1]
+            h11 = h11s[-2] + (decimalyear - years[-1]) * h11s[-1]
+
+        return g10, g11, h11
+
+    @add_common_docstring(**_frame_parameters())
+    @property
+    def dipole_lonlat(self):
+        """
+        The geographic longitude/latitude of the Earth's magnetic north pole.
+
+        This position is calculated from the first three coefficients of the selected
+        IGRF model per Franz & Harper (2002).  The small offset between dipole center
+        and Earth center is ignored.
+
+        References
+        ----------
+        {igrf_reference}
+        """
+        g10, g11, h11 = self._lowest_igrf_coeffs
+        # Intentionally use arctan() instead of arctan2() to get angles in specific quadrants
+        lon = (np.arctan(h11 / g11) << u.rad).to(u.deg)
+        lat = 90*u.deg - np.arctan((g11 * np.cos(lon) + h11 * np.sin(lon)) / g10)
+        return Longitude(lon, wrap_angle=180*u.deg), Latitude(lat)
+
+    @add_common_docstring(**_frame_parameters())
+    @property
+    def dipole_moment(self):
+        """
+        The Earth's dipole moment.
+
+        The moment is calculated from the first three coefficients of the selected
+        IGRF model per Franz & Harper (2002).
+
+        References
+        ----------
+        {igrf_reference}
+        """
+        g10, g11, h11 = self._lowest_igrf_coeffs
+        moment = np.sqrt(g10**2 + g11**2 + h11**2) * R_earth**3
+        return moment
+
+
+@add_common_docstring(**_frame_parameters())
+class Geomagnetic(BaseMagnetic):
+    """
+    A coordinate or frame in the Geomagnetic (MAG) system.
+
+    - The origin is the center of the Earth.
+    - The Z-axis (+90 degrees latitude) is aligned with the Earth's magnetic north
+      pole.
+    - The X-axis (0 degrees longitude and 0 degrees latitude) is aligned with the
+      component of the Earth's geographic north pole that is perpendicular to the
+      Z-axis.
+
+    Parameters
+    ----------
+    {data}
+    {lonlat}
+    {distance_earth}
+    {magnetic_model}
+    {common}
+
+    Notes
+    -----
+    The position of Earth's magnetic north pole is calculated from the first three
+    coefficients of the selected IGRF model per Franz & Harper (2002).  The small
+    offset between dipole center and Earth center is ignored.
+
+    References
+    ----------
+    {igrf_reference}
+    """
+
+
+@add_common_docstring(**_frame_parameters())
+class SolarMagnetic(BaseMagnetic):
+    """
+    A coordinate or frame in the Solar Magnetic (SM) system.
+
+    - The origin is the center of the Earth.
+    - The Z-axis (+90 degrees latitude) is aligned with the Earth's magnetic north
+      pole.
+    - The X-axis (0 degrees longitude and 0 degrees latitude) is aligned with the
+      component of the Earth-Sun line that is perpendicular to the Z-axis.
+
+    Parameters
+    ----------
+    {data}
+    {lonlat}
+    {distance_earth}
+    {magnetic_model}
+    {common}
+
+    Notes
+    -----
+    The position of Earth's magnetic north pole is calculated from the first three
+    coefficients of the selected IGRF model per Franz & Harper (2002).  The small
+    offset between dipole center and Earth center is ignored.
+
+    References
+    ----------
+    {igrf_reference}
+    """
+
+
+@add_common_docstring(**_frame_parameters())
+class GeocentricSolarMagnetospheric(BaseMagnetic):
+    """
+    A coordinate or frame in the GeocentricSolarMagnetospheric (GSM) system.
+
+    - The origin is the center of the Earth.
+    - The X-axis (0 degrees longitude and 0 degrees latitude) is aligned with the
+      Earth-Sun line.
+    - The Z-axis (+90 degrees latitude) is aligned with the component of the Earth's
+      magnetic north pole that is perpendicular to the X-axis.
+
+    Parameters
+    ----------
+    {data}
+    {lonlat}
+    {distance_earth}
+    {magnetic_model}
+    {common}
+
+    Notes
+    -----
+    The position of Earth's magnetic north pole is calculated from the first three
+    coefficients of the selected IGRF model per Franz & Harper (2002).  The small
+    offset between dipole center and Earth center is ignored.
+
+    References
+    ----------
+    {igrf_reference}
+    """

@@ -1,14 +1,15 @@
+import re
 import warnings
 
 import numpy as np
 import pytest
+from erfa import ErfaWarning
 from numpy.testing import assert_allclose
 
 import astropy.units as u
 from astropy.coordinates import Angle, EarthLocation
 from astropy.tests.helper import assert_quantity_allclose
 from astropy.time import Time
-from astropy.utils.exceptions import ErfaWarning
 
 from sunpy.coordinates import sun
 from sunpy.sun.constants import radius
@@ -71,7 +72,6 @@ def test_angular_radius(t2):
     # Validate against a published value from the Astronomical Almanac (2013, C13)
     # The Astromomical Almanac uses a slightly different radius for the Sun (6.96e5 km)
     # The Astronomical Almanac also uses a small-angle approximation
-    # See https://archive.org/details/131123ExplanatorySupplementAstronomicalAlmanac/page/n212/mode/1up
     assert_quantity_allclose(sun.angular_radius(t2),
                              Angle('0d15m44.61s') / (6.96e5*u.km) * radius,  # scale to IAU radius
                              atol=0.005*u.arcsec)
@@ -265,8 +265,8 @@ def test_L0_astronomical_almanac():
                  '2013-04-01': 221.44,
                  '2013-05-01': 185.30,
                  '2013-06-01': 135.30,
-                 '2013-07-01':  98.22,  # NOQA
-                 '2013-08-01':  48.03,  # NOQA
+                 '2013-07-01': 98.22,
+                 '2013-08-01': 48.03,
                  '2013-09-01': 358.28,
                  '2013-10-01': 322.22,
                  '2013-11-01': 273.31,
@@ -288,8 +288,8 @@ def test_L0_jpl_horizons():
                   '2013-04-01': 221.440599,
                   '2013-05-01': 185.306476,
                   '2013-06-01': 135.303097,
-                  '2013-07-01':  98.221806,  # NOQA
-                  '2013-08-01':  48.035951,  # NOQA
+                  '2013-07-01': 98.221806,
+                  '2013-08-01': 48.035951,
                   '2013-09-01': 358.289921,
                   '2013-10-01': 322.226009,
                   '2013-11-01': 273.315206,
@@ -488,21 +488,22 @@ def test_carrington_rotation_time_longitude(crot, longitude, crot_fractional):
                                  [180, 90]), np.array([2000.5, 2000.75])),
                              (2000, np.array([180, 90]), np.array([2000.5, 2000.75])),
                              (np.array([2000, 2000]), 180, np.array([2000.5, 2000.5]))
-                         ])
+])
 def test_carrington_rotation_time_longitude_numpy(crot, longitude, crot_fractional):
     assert all(sun.carrington_rotation_time(crot*u.one, longitude*u.deg) ==
                sun.carrington_rotation_time(crot_fractional*u.one))
 
 
-@pytest.mark.parametrize(("crot", "longitude"),
-                         [
-                             (2000, 0),
-                             (2000, -10),
-                             (2000, 400),
-                             (2000.5, 180),
-                         ])
-def test_carrington_rotation_time_longitude_err(crot, longitude):
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize(("crot", "longitude", "expected_error"),
+    [
+        (2000, 0, "Carrington longitude(s) must be > 0 degrees and <= 360 degrees."),
+        (2000, -10, "Carrington longitude(s) must be > 0 degrees and <= 360 degrees."),
+        (2000, 400, "Carrington longitude(s) must be > 0 degrees and <= 360 degrees."),
+        (2000.5, 180, "Carrington rotation number(s) must be integral if `longitude` is provided.")
+    ]
+)
+def test_carrington_rotation_time_longitude_err(crot, longitude, expected_error):
+    with pytest.raises(ValueError, match=re.escape(expected_error)):
         sun.carrington_rotation_time(crot*u.one, longitude*u.deg)
 
 
@@ -519,3 +520,37 @@ def test_carrington_rotation_str():
     # Check that by default a human parseable string is returned
     t = sun.carrington_rotation_time(2210)
     assert str(t) == '2018-10-26 20:48:16.137'
+
+
+# For 2024 Apr 8, at 29.6 deg N, 98.5 deg W, one eclipse calculator has:
+#   Partial eclipse begins: 17:14:49 UTC
+#   Totality begins: 18:33:44 UTC
+#   Maximum eclipse: 18:34:38 UTC
+#   Totality ends: 18:35:32 UTC
+#   Partial eclipse ends: 19:56:00 UTC
+# https://www.timeanddate.com/eclipse/in/@29.6,-98.5?iso=20240408
+
+@pytest.mark.remote_data
+@pytest.mark.filterwarnings("ignore:Tried to get polar motions for times after IERS data is valid.")
+@pytest.mark.filterwarnings("ignore:.*times are outside of range covered by IERS table.")
+def test_eclipse_amount(use_DE440s):
+    location = EarthLocation.from_geodetic(-98.5*u.deg, 29.6*u.deg)
+
+    # We use the mean lunar radius (the default) for penumbral contacts
+    assert sun.eclipse_amount(location.get_itrs(Time('2024-04-08 17:14:48'))) == 0
+    assert sun.eclipse_amount(location.get_itrs(Time('2024-04-08 17:14:53'))) > 0
+    assert sun.eclipse_amount(location.get_itrs(Time('2024-04-08 19:55:58'))) > 0
+    assert sun.eclipse_amount(location.get_itrs(Time('2024-04-08 19:56:01'))) == 0
+
+
+@pytest.mark.remote_data
+@pytest.mark.filterwarnings("ignore:Tried to get polar motions for times after IERS data is valid.")
+@pytest.mark.filterwarnings("ignore:.*times are outside of range covered by IERS table.")
+def test_eclipse_amount_minimum(use_DE440s):
+    location = EarthLocation.from_geodetic(-98.5*u.deg, 29.6*u.deg)
+
+    # We use the mean minimum lunar radius for umbral contacts
+    assert sun.eclipse_amount(location.get_itrs(Time('2024-04-08 18:33:43')), moon_radius="minimum") < 1
+    assert sun.eclipse_amount(location.get_itrs(Time('2024-04-08 18:33:45')), moon_radius="minimum") == 1
+    assert sun.eclipse_amount(location.get_itrs(Time('2024-04-08 18:35:31')), moon_radius="minimum") == 1
+    assert sun.eclipse_amount(location.get_itrs(Time('2024-04-08 18:35:35')), moon_radius="minimum") < 1

@@ -16,13 +16,15 @@ from urllib.request import Request, urlopen
 
 import zeep
 
+from astropy.utils.decorators import deprecated_renamed_argument
+
 from sunpy import config, log
 from sunpy.net import _attrs as core_attrs
 from sunpy.net.attr import and_
 from sunpy.net.base_client import BaseClient, QueryResponseRow
 from sunpy.net.vso import attrs
 from sunpy.net.vso.attrs import _walker as walker
-from sunpy.util.exceptions import warn_connection, warn_user
+from sunpy.util.exceptions import SunpyDeprecationWarning, warn_connection, warn_user
 from sunpy.util.net import parse_header, slugify
 from sunpy.util.parfive_helpers import Downloader, Results
 from .exceptions import (
@@ -180,6 +182,8 @@ class VSOClient(BaseClient):
         obj = self.api.get_type(f"VSO:{atype}")
         return obj(**kwargs)
 
+
+    @deprecated_renamed_argument("response_format", None,"6.0", warning_type=SunpyDeprecationWarning)
     def search(self, *query, response_format=None):
         """
         Query data from the VSO with the new API. Takes a variable number
@@ -193,27 +197,7 @@ class VSOClient(BaseClient):
             ``"table"`` to return the responses in a subclass of
             `~astropy.table.QTable`.
 
-        Examples
-        --------
-        Query all data from eit or aia between 2010-01-01T00:00 and
-        2010-01-01T01:00.
-
-        >>> from datetime import datetime
-        >>> from sunpy.net import vso, attrs as a
-        >>> client = vso.VSOClient()  # doctest: +REMOTE_DATA
-        >>> client.search(
-        ...    a.Time(datetime(2010, 1, 1), datetime(2010, 1, 1, 1)),
-        ...    a.Instrument.eit | a.Instrument.aia,
-        ...    response_format="table")   # doctest:  +REMOTE_DATA
-        <sunpy.net.vso.table_response.VSOQueryResponseTable object at ...>
-            Start Time               End Time        Source ... Extent Type   Size
-                                                            ...              Mibyte
-        ----------------------- ----------------------- ------ ... ----------- -------
-        2010-01-01 00:00:08.000 2010-01-01 00:00:20.000   SOHO ...    FULLDISK 2.01074
-        2010-01-01 00:12:08.000 2010-01-01 00:12:20.000   SOHO ...    FULLDISK 2.01074
-        2010-01-01 00:24:10.000 2010-01-01 00:24:22.000   SOHO ...    FULLDISK 2.01074
-        2010-01-01 00:36:08.000 2010-01-01 00:36:20.000   SOHO ...    FULLDISK 2.01074
-        2010-01-01 00:48:09.000 2010-01-01 00:48:21.000   SOHO ...    FULLDISK 2.01074
+            Now deprecated, will be removed in sunpy 7.0.
 
         Returns
         -------
@@ -399,7 +383,7 @@ class VSOClient(BaseClient):
         """
         if path is None:
             path = Path(config.get('downloads', 'download_dir')) / '{file}'
-        elif isinstance(path, (str, os.PathLike)) and '{file}' not in str(path):
+        elif isinstance(path, str | os.PathLike) and '{file}' not in str(path):
             path = Path(path) / '{file}'
         else:
             path = Path(path)
@@ -410,7 +394,7 @@ class VSOClient(BaseClient):
             dl_set = False
             downloader = Downloader(progress=progress, overwrite=overwrite)
 
-        if isinstance(query_response, (QueryResponse, list)):
+        if isinstance(query_response, QueryResponse | list):
             query_response = VSOQueryResponseTable.from_zeep_response(query_response,
                                                                       client=self,
                                                                       _sort=False)
@@ -491,7 +475,7 @@ class VSOClient(BaseClient):
         # Iterate over the series and make a DRI for each.
         # groupby creates an iterator based on a key function, in this case
         # based on the series (the part before the first ':')
-        for series, fileids in itertools.groupby(series_sorted, key=series_func):
+        for _, fileids in itertools.groupby(series_sorted, key=series_func):
             dris.append(self.make('DataRequestItem',
                                   provider='JSOC',
                                   fileiditem={'fileid': list(fileids)}))
@@ -680,10 +664,9 @@ class VSOClient(BaseClient):
         # Construct and format the request
         keyword_info = {}
         url = "https://vso1.nascom.nasa.gov/cgi-bin/registry_json.cgi"
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
         for keyword in keywords:
-            data = urlencode({'fields': f"['{keyword}']".replace("'", '"')}).encode('ascii')
-            req = Request(url=url, data=data, headers=headers)
+            data = urlencode({'fields': f"['{keyword}']".replace("'", '"')})
+            req = Request(url=url + f"?{data}")
             response = urlopen(req)
             keyword_info[keyword.replace("+", "")] = json.loads(response.read())
 
@@ -698,9 +681,13 @@ class VSOClient(BaseClient):
                     else:
                         attrs[key].append((str(item[key]), str(item[key+"_long"])))
 
+        # Sort values within each attribute
+        for attr in attrs:
+            attrs[attr] = sorted(attrs[attr], key=lambda _list: _list[0])
+
         with open(os.path.join(here, 'data', 'attrs.json'), 'w') as attrs_file:
             json.dump(dict(sorted(attrs.items())), attrs_file, indent=2)
 
     @property
     def info_url(self):
-        return 'http://vso.stanford.edu/cgi-bin/search'
+        return 'https://sdac.virtualsolar.org/cgi/search\nData retrieval status: https://docs.virtualsolar.org/wiki/VSOHealthReport'

@@ -33,16 +33,11 @@ class CDAWEBClient(BaseClient):
     Dataset ID.
     <BLANKLINE>
     <BLANKLINE>
-                        Attribute Name                    Client ...                                   Description
-    ----------------------------------------------------- ------ ... --------------------------------------------------------------------------------
-    a1_k0_mpa                                             CDAWEB ... LANL 2001 Magnetospheric Plasma Analyzer Key Parameters - Mike Henderson (LANL)
-    a2_k0_mpa                                             CDAWEB ... LANL 2002 Magnetospheric Plasma Analyzer Key Parameters - Mike Henderson (LANL)
-    ac_at_def                                             CDAWEB ... ACE Hourly RTN, GSE and J2000 GCI Attitude direction cosines - E. C. Stone (C...
+                         Attribute Name                     Client ...                                   Description
+    ------------------------------------------------------- ------ ... --------------------------------------------------------------------------------
+    a1_k0_mpa                                               CDAWEB ... LANL 2001 Magnetospheric Plasma Analyzer Key Parameters - Mike Henderson (LANL)
+    a2_k0_mpa                                               CDAWEB ... LANL 2002 Magnetospheric Plasma Analyzer Key Parameters - Mike Henderson (LANL)
     ...
-    wi_strahl0_swe                                        CDAWEB ... Wind Solar Wind Experiment (SWE) strahl detector, ~1/2 sec solar wind electro...
-    wi_sw_ion_dist_swe_faraday                            CDAWEB ... Faraday Cup orientation and charge flux - Keith Ogilvie (NASA GSFC)
-    wild2_helio1day_position                              CDAWEB ... Position in heliocentric coordinates from SPDF Helioweb - Natalia Papitashvil...
-    >>>
     >>> res = Fido.search(a.Time('2021/07/01', '2021/07/08'),
     ...                   a.cdaweb.Dataset('SOLO_L2_MAG-RTN-NORMAL-1-MINUTE')) # doctest: +REMOTE_DATA
     >>> res # doctest: +REMOTE_DATA

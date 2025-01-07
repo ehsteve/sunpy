@@ -8,6 +8,7 @@ This module provides the `Fido
 `Fido.fetch <sunpy.net.fido_factory.UnifiedDownloaderFactory.fetch>`.
 """
 import os
+import re
 from pathlib import Path
 from textwrap import dedent
 from collections.abc import Sequence
@@ -90,7 +91,7 @@ class UnifiedResponse(Sequence):
         The first index is to the client and the second index is the records
         returned from those clients.
         """
-        if isinstance(aslice, (int, slice)):
+        if isinstance(aslice, int | slice):
             ret = self._list[aslice]
 
         # using the client's name for indexing the responses.
@@ -119,7 +120,7 @@ class UnifiedResponse(Sequence):
         else:
             raise IndexError("UnifiedResponse objects must be sliced with integers or strings.")
 
-        if isinstance(ret, (QueryResponseTable, QueryResponseColumn, QueryResponseRow)):
+        if isinstance(ret, QueryResponseTable | QueryResponseColumn | QueryResponseRow):
             return ret
 
         return UnifiedResponse(*ret)
@@ -288,7 +289,7 @@ class UnifiedDownloaderFactory(BasicRegistrationFactory):
         >>> unifresp = Fido.search(a.Time('2012/3/4', '2012/3/6'),
         ...                        a.Instrument.aia,
         ...                        a.Wavelength(304*u.angstrom, 304*u.angstrom),
-        ...                        a.Sample(10*u.minute))  # doctest: +REMOTE_DATA
+        ...                        a.Sample(10*u.minute))  # doctest: +SKIP
 
         Parameters
         ----------
@@ -368,7 +369,7 @@ class UnifiedDownloaderFactory(BasicRegistrationFactory):
         """
         if path is None:
             path = Path(config.get('downloads', 'download_dir')) / '{file}'
-        elif isinstance(path, (str, os.PathLike)) and '{file}' not in str(path):
+        elif isinstance(path, str | os.PathLike) and '{file}' not in str(path):
             path = Path(path) / '{file}'
         else:
             path = Path(path)
@@ -478,11 +479,7 @@ class UnifiedDownloaderFactory(BasicRegistrationFactory):
         results = []
         for client in candidate_widget_types:
             tmpclient = client()
-            kwargs = dict()
-            # Handle the change in response format in the VSO
-            if isinstance(tmpclient, vso.VSOClient):
-                kwargs = dict(response_format="table")
-            results.append(tmpclient.search(*query, **kwargs))
+            results.append(tmpclient.search(*query))
 
         # This method is called by `search` and the results are fed into a
         # UnifiedResponse object.
@@ -512,8 +509,8 @@ class UnifiedDownloaderFactory(BasicRegistrationFactory):
             lines = [f"<p>{line}</p>" for line in lines]
         for key in BaseClient._registry.keys():
             t.add_row((key.__name__, dedent(
-                key.__doc__.partition("\n\n")[0].replace("\n    ", " "))))
-        lines.extend(t.pformat_all(max_lines=visible_entries,
+                re.sub(r"\s+", " ", key.__doc__.partition("\n\n")[0]).strip())))
+        lines.extend(t.pformat(max_lines=visible_entries,
                                    show_dtype=False, max_width=width, align="<", html=html))
         return '\n'.join(lines)
 

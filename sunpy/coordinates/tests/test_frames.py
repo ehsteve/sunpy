@@ -14,15 +14,18 @@ from astropy.coordinates import (
 from astropy.tests.helper import assert_quantity_allclose
 
 from sunpy import sun
+from sunpy.coordinates import PlanarScreen, SphericalScreen
 from sunpy.coordinates.frames import (
+    Geomagnetic,
     Heliocentric,
     HeliographicCarrington,
     HeliographicStonyhurst,
     Helioprojective,
+    HelioprojectiveRadial,
 )
 from sunpy.coordinates.sun import angular_radius
 from sunpy.time import parse_time
-from sunpy.util.exceptions import SunpyUserWarning
+from sunpy.util.exceptions import SunpyDeprecationWarning, SunpyUserWarning
 
 RSUN_METERS = sun.constants.get('radius').si.to(u.m)
 DSUN_METERS = sun.constants.get('mean distance').si.to(u.m)
@@ -223,12 +226,13 @@ def test_hpc_default_observer():
 
 
 def test_hpc_low_precision_float_warning():
-    hpc = Helioprojective(u.Quantity(0, u.deg, dtype=np.float32),
-                          u.Quantity(0, u.arcsec, dtype=np.float16),
-                          observer=HeliographicStonyhurst(0*u.deg, 0*u.deg, 1*u.AU))
+    with np.errstate(over='ignore'):
+        hpc = Helioprojective(u.Quantity(0, u.deg, dtype=np.float32),
+                              u.Quantity(0, u.arcsec, dtype=np.float16),
+                              observer=HeliographicStonyhurst(0*u.deg, 0*u.deg, 1*u.AU))
 
-    with pytest.warns(SunpyUserWarning, match="Tx is float32, and Ty is float16"):
-        hpc.make_3d()
+        with pytest.warns(SunpyUserWarning, match="Tx is float32, and Ty is float16"):
+            hpc.make_3d()
 
 
 def test_hpc_obstime_from_observer():
@@ -258,11 +262,70 @@ def test_hpc_is_visible_tolerance():
     hpc = Helioprojective(200*u.arcsec, 0*u.arcsec,
                           observer='earth', obstime='2023-08-03').make_3d()
 
-    # Due to the limitations of numerical precision, the coordinate will be computed to be slightly
-    # below the solar surface, and thus invisible when the tolerance is set to zero
-    assert not hpc.is_visible(tolerance=0*u.m)
+    # Due to the limitations of numerical precision, the coordinate may be computed to be slightly
+    # below the solar surface, and thus may be invisible when the tolerance is set to zero
+    if hpc.is_visible(tolerance=0*u.m):
+        pytest.skip("Test already passes prior to increasing the tolerance.")
 
     assert hpc.is_visible(tolerance=1*u.m)
+
+
+# ==============================================================================
+# Helioprojective Radial Tests
+# ==============================================================================
+
+@pytest.mark.parametrize(('args', 'kwargs'),
+                         two_D_parameters + [(None, {'psi': 0 * u.deg,
+                                                     'delta': 0 * u.arcsec})])
+def test_create_hpr_2d(args, kwargs):
+    hpr1 = init_frame(HelioprojectiveRadial, args, kwargs)
+
+    assert isinstance(hpr1, HelioprojectiveRadial)
+    assert isinstance(hpr1._data, UnitSphericalRepresentation)
+
+    assert hpr1.psi.unit is u.deg
+    assert hpr1.delta.unit is u.deg
+    assert_quantity_allclose(hpr1.psi, 0*u.deg)
+    assert_quantity_allclose(hpr1.delta, 0*u.deg)
+
+    assert_quantity_allclose(hpr1.theta, 90*u.deg)
+
+
+@pytest.mark.parametrize(
+    ('args', 'kwargs'),
+    three_D_parameters + [(None, {'psi': 0 * u.deg,
+                                  'delta': 0 * u.arcsec,
+                                  'distance': 1 * u.Mm}),
+                          ([0 * u.deg, 0 * u.arcsec], {'distance': 1 * u.Mm})])
+def test_create_hpr_3d(args, kwargs):
+    hpr1 = init_frame(HelioprojectiveRadial, args, kwargs)
+
+    assert isinstance(hpr1, HelioprojectiveRadial)
+    assert isinstance(hpr1._data, SphericalRepresentation)
+
+    assert hpr1.psi.unit is u.deg
+    assert hpr1.delta.unit is u.deg
+    assert hpr1.distance.unit is u.Mm
+    assert_quantity_allclose(hpr1.psi, 0*u.deg)
+    assert_quantity_allclose(hpr1.delta, 0*u.deg)
+    assert_quantity_allclose(hpr1.distance, 1*u.Mm)
+
+    assert_quantity_allclose(hpr1.theta, 90*u.deg)
+
+    # Since hpr1 is already 3D, make_3d() should simply return the original object
+    hpr2 = hpr1.make_3d()
+    assert hpr2 is hpr1
+
+
+def test_hpr_distance():
+    hpr1 = HelioprojectiveRadial(0*u.deg, -90*u.deg,
+                                 observer=HeliographicStonyhurst(0*u.deg, 0*u.deg, 1*u.AU))
+
+    hpr2 = hpr1.make_3d()
+
+    assert_quantity_allclose(hpr2.psi, 0*u.deg)
+    assert_quantity_allclose(hpr2.delta, -90*u.deg)
+    assert_quantity_allclose(hpr2.distance, DSUN_METERS - RSUN_METERS)
 
 
 # ==============================================================================
@@ -413,8 +476,8 @@ def test_hcc_default_observer():
 
 
 @pytest.mark.parametrize(('x', 'y', 'psi'), [(0*u.km, -1*u.km, 270*u.deg),
-                                       (0*u.km, 1*u.km, 90*u.deg),
-                                       (-1*u.km, 0*u.km, 180*u.deg)])
+                                             (0*u.km, 1*u.km, 90*u.deg),
+                                             (-1*u.km, 0*u.km, 180*u.deg)])
 def test_heliocentric_radial_psi(x, y, psi):
     # The cylindrical representation of HCC is Heliocentric Radial
     # Test that the `psi` component is represented as desired
@@ -422,6 +485,31 @@ def test_heliocentric_radial_psi(x, y, psi):
     hcc = Heliocentric(CartesianRepresentation(x, y, 0*u.km), representation_type='cylindrical')
 
     assert_quantity_allclose(hcc.psi, psi)
+
+
+# ==============================================================================
+# Magnetic-model coordinate frame tests
+# ==============================================================================
+
+
+def test_magnetic_model_default():
+    # Also tests that no downloading happens because this test is not marked as remote
+    obstime = '2012-07-01'
+    frame_default = Geomagnetic(obstime=obstime)
+    frame_igrf13 = Geomagnetic(obstime=obstime, magnetic_model='igrf13')
+
+    assert_quantity_allclose(frame_igrf13.dipole_lonlat, [-72.408328, 80.16423]*u.deg)
+    assert_quantity_allclose(frame_default.dipole_lonlat, frame_igrf13.dipole_lonlat)
+
+
+@pytest.mark.remote_data
+@pytest.mark.parametrize(('magnetic_model', 'obstime', 'dipole_lonlat'),
+                         [('igrf12', '2012-07-01', [-72.414318, 80.16354]*u.deg),
+                          ('igrf11', '2006-01-01', [-71.886023, 79.801523]*u.deg),
+                          ('igrf10', '2006-01-01', [-71.822653, 79.785185]*u.deg)])
+def test_magnetic_model_with(magnetic_model, obstime, dipole_lonlat):
+    frame = Geomagnetic(magnetic_model=magnetic_model, obstime=obstime)
+    assert_quantity_allclose(frame.dipole_lonlat, dipole_lonlat)
 
 
 # ==============================================================================
@@ -481,3 +569,77 @@ def test_angular_radius_no_obstime():
     coord = Helioprojective(0*u.deg, 0*u.deg, 5*u.km, obstime=None, observer="earth")
     with pytest.raises(ValueError, match=r"The observer must be fully defined by specifying `obstime`."):
         coord.angular_radius
+
+
+@pytest.fixture
+def off_limb_coord():
+    frame = Helioprojective(observer='earth', obstime='2020-01-01')
+    return SkyCoord(Tx=[-1000, 300, 1000]*u.arcsec, Ty=[-1000, 300, 1000]*u.arcsec, frame=frame)
+
+
+@pytest.fixture
+def non_earth_coord():
+    return SkyCoord(70*u.deg, 20*u.deg, 1*u.AU, obstime='2020-01-01', frame=HeliographicStonyhurst)
+
+
+@pytest.mark.parametrize('screen_class', [
+    SphericalScreen,
+    PlanarScreen,
+])
+def test_screen_classes(off_limb_coord, screen_class):
+    # Smoke test for spherical screen
+    with pytest.warns(SunpyUserWarning, match='The conversion of these 2D helioprojective coordinates to 3D is all NaNs'):
+            olc_3d = off_limb_coord[0].make_3d()
+    assert np.isnan(olc_3d.distance).all()
+    sph_screen = screen_class(off_limb_coord[0].observer)
+    with sph_screen:
+        olc_3d = off_limb_coord[0].make_3d()
+    assert not np.isnan(olc_3d.distance).all()
+
+
+def test_assume_spherical_screen_deprecated(off_limb_coord):
+    with pytest.warns(SunpyDeprecationWarning, match='The assume_spherical_screen function is deprecated'):
+        with Helioprojective.assume_spherical_screen(off_limb_coord.observer):
+            _ = off_limb_coord.make_3d()
+
+
+@pytest.mark.parametrize(('only_off_disk', 'distance_from_center', 'distance'), [
+    (False, 0*u.m, [0.98331616, 0.98329512, 0.98331616]*u.AU),
+    (True, 0*u.m, [0.98331616, 0.97910333, 0.98331616]*u.AU),
+    (False, 1*u.Rsun, [0.97866558, 0.97864465, 0.97866558]*u.AU),
+])
+def test_planar_screen(off_limb_coord, only_off_disk, distance_from_center, distance):
+    with PlanarScreen(off_limb_coord.observer, distance_from_center=distance_from_center, only_off_disk=only_off_disk):
+        olc_3d = off_limb_coord.make_3d()
+    assert u.quantity.allclose(olc_3d.distance, distance)
+
+
+@pytest.mark.parametrize(('only_off_disk', 'distance'), [
+    (False, [0.98329304, 0.98329304, 0.98329304]*u.AU),
+    (True, [0.98329304, 0.97910333, 0.98329304]*u.AU),
+])
+def test_spherical_screen(off_limb_coord, only_off_disk, distance):
+    with SphericalScreen(off_limb_coord.observer, only_off_disk=only_off_disk):
+        olc_3d = off_limb_coord.make_3d()
+    assert u.quantity.allclose(olc_3d.distance, distance)
+
+
+@pytest.mark.parametrize(('only_off_disk', 'distance_from_center', 'distance'), [
+    (False, 0*u.m, [0.96419505, 0.98918004, 1.00321100]*u.AU),
+    (True, 0*u.m, [0.96419505, 0.97910333, 1.00321100]*u.AU),
+    (False, 1*u.Rsun, [0.94916557, 0.97376111, 0.98757335]*u.AU),
+])
+def test_planar_screen_askew(off_limb_coord, only_off_disk, distance_from_center, distance, non_earth_coord):
+    with PlanarScreen(non_earth_coord, distance_from_center=distance_from_center, only_off_disk=only_off_disk):
+        olc_3d = off_limb_coord.make_3d()
+    assert u.quantity.allclose(olc_3d.distance, distance)
+
+
+@pytest.mark.parametrize(('only_off_disk', 'distance'), [
+    (False, [0.96348934, 0.98911699, 1.00251206]*u.AU),
+    (True, [0.96348934, 0.97910333, 1.00251206]*u.AU),
+])
+def test_spherical_screen_askew(off_limb_coord, only_off_disk, distance, non_earth_coord):
+    with SphericalScreen(non_earth_coord, only_off_disk=only_off_disk):
+        olc_3d = off_limb_coord.make_3d()
+    assert u.quantity.allclose(olc_3d.distance, distance)

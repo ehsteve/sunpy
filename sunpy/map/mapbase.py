@@ -17,7 +17,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backend_bases import FigureCanvasBase
 from matplotlib.figure import Figure
-from packaging import version
 
 try:
     from dask.array import Array as DaskArray
@@ -30,13 +29,11 @@ import astropy.wcs
 from astropy.coordinates import BaseCoordinateFrame, Longitude, SkyCoord, UnitSphericalRepresentation
 from astropy.nddata import NDData
 from astropy.utils.metadata import MetaData
-from astropy.visualization import AsymmetricPercentileInterval, HistEqStretch, ImageNormalize
+from astropy.visualization import HistEqStretch, ImageNormalize
 from astropy.visualization.wcsaxes import Quadrangle, WCSAxes
 
 # The next two are not used but are called to register functions with external modules
 import sunpy.coordinates
-import sunpy.io as io
-import sunpy.io._fits
 import sunpy.visualization.colormaps
 from sunpy import config, log
 from sunpy.coordinates import HeliographicCarrington, get_earth, sun
@@ -44,26 +41,31 @@ from sunpy.coordinates.utils import get_rectangle_coordinates
 from sunpy.image.resample import resample as sunpy_image_resample
 from sunpy.image.resample import reshape_image_to_4d_superpixel
 from sunpy.image.transform import _get_transform_method, _rotation_function_names, affine_transform
+from sunpy.io._file_tools import write_file
+from sunpy.io._fits import extract_waveunit, header_to_fits
+from sunpy.map.maputils import _clip_interval, _handle_norm
 from sunpy.sun import constants
 from sunpy.time import is_time, parse_time
 from sunpy.util import MetaDict, expand_list
 from sunpy.util.decorators import (
+    ACTIVE_CONTEXTS,
     add_common_docstring,
     cached_property_based_on,
     check_arithmetic_compatibility,
     deprecate_positional_args_since,
+    deprecated,
 )
 from sunpy.util.exceptions import warn_metadata, warn_user
 from sunpy.util.functools import seconddispatch
-from sunpy.util.util import _figure_to_base64
+from sunpy.util.util import _figure_to_base64, fix_duplicate_notes
 from sunpy.visualization import axis_labels_from_ctype, peek_show, wcsaxes_compat
 from sunpy.visualization.colormaps import cm as sunpy_cm
 
 TIME_FORMAT = config.get("general", "time_format")
 PixelPair = namedtuple('PixelPair', 'x y')
 SpatialPair = namedtuple('SpatialPair', 'axis1 axis2')
-
-_META_FIX_URL = 'https://docs.sunpy.org/en/stable/code_ref/map.html#fixing-map-metadata'
+_NUMPY_COPY_IF_NEEDED = False if np.__version__.startswith("1.") else None
+_META_FIX_URL = 'https://docs.sunpy.org/en/stable/how_to/fix_map_metadata.html'
 
 # Manually specify the ``.meta`` docstring. This is assigned to the .meta
 # class attribute in GenericMap.__init__()
@@ -131,11 +133,38 @@ class GenericMap(NDData):
         Additional keyword arguments are passed to `~astropy.nddata.NDData`
         init.
 
+
+    Methods and their known behavior with dask arrays
+    -------------------------------------------------
+
+    +-------------------+------------------------------------+
+    | Method            | Preserve laziness with Dask Arrays |
+    +===================+====================================+
+    | `reproject_to`    | No                                 |
+    +-------------------+------------------------------------+
+    | `resample`        | No                                 |
+    +-------------------+------------------------------------+
+    | `rotate`          | No                                 |
+    +-------------------+------------------------------------+
+    | `max`             | Yes                                |
+    +-------------------+------------------------------------+
+    | `mean`            | Yes                                |
+    +-------------------+------------------------------------+
+    | `min`             | Yes                                |
+    +-------------------+------------------------------------+
+    | `std`             | Yes                                |
+    +-------------------+------------------------------------+
+    | `superpixel`      | Yes                                |
+    +-------------------+------------------------------------+
+    | `submap`          | Yes                                |
+    +-------------------+------------------------------------+
+
+
     Examples
     --------
     >>> import sunpy.map
     >>> import sunpy.data.sample  # doctest: +REMOTE_DATA
-    >>> aia = sunpy.map.Map(sunpy.data.sample.AIA_171_IMAGE)  # doctest: +REMOTE_DATA
+    >>> aia = sunpy.map.Map(sunpy.data.sample.AIA_171_IMAGE)  # doctest: +REMOTE_DATA +IGNORE_WARNINGS
     >>> aia   # doctest: +REMOTE_DATA
     <sunpy.map.sources.sdo.AIAMap object at ...>
     SunPy Map
@@ -164,7 +193,7 @@ class GenericMap(NDData):
            [-127.899666 , -127.899666 , -127.899666 , ..., -127.899666 ,
             -127.899666 , -127.899666 ],
            [-128.03072  , -128.03072  , -128.03072  , ..., -128.03072  ,
-            -128.03072  , -128.03072  ]], dtype=float32)
+            -128.03072  , -128.03072  ]], shape=(1024, 1024), dtype=float32)
 
     >>> aia.spatial_units   # doctest: +REMOTE_DATA
     SpatialPair(axis1=Unit("arcsec"), axis2=Unit("arcsec"))
@@ -195,10 +224,15 @@ class GenericMap(NDData):
         if cls.__doc__ is None:
             # Set an empty string, to prevent an error adding None to str in the next line
             cls.__doc__ = ''
-        cls.__doc__ += textwrap.indent(_notes_doc, "    ")
+        cls.__doc__ = fix_duplicate_notes(_notes_doc, cls.__doc__)
 
         if hasattr(cls, 'is_datasource_for'):
-            cls._registry[cls] = cls.is_datasource_for
+            # NOTE: This conditional is due to overlapping map sources in sunpy and pfsspy that
+            # lead to a MultipleMatchError if sunpy.map and pfsspy.map are imported.
+            # See https://github.com/sunpy/sunpy/issues/7294 for more information.
+            # This also applies to older versions of sunkit-magex with ADAPTMap.
+            if f'{cls.__module__}.{cls.__name__}' not in  ["pfsspy.map.GongSynopticMap", "sunkit_magex.pfss.map.ADAPTMap"]:
+                cls._registry[cls] = cls.is_datasource_for
 
     def __init__(self, data, header, plot_settings=None, **kwargs):
         # If the data has more than two dimensions, the first dimensions
@@ -232,20 +266,14 @@ class GenericMap(NDData):
         # Validate header
         # TODO: This should be a function of the header, not of the map
         self._validate_meta()
-
-        if self.dtype == np.uint8:
-            norm = None
-        else:
+        self.plot_settings = {'cmap': 'gray',
+                            'interpolation': 'nearest',
+                            'origin': 'lower'
+                            }
+        if self.dtype != np.uint8:
             # Put import here to reduce sunpy.map import time
             from matplotlib import colors
-            norm = colors.Normalize()
-
-        # Visualization attributes
-        self.plot_settings = {'cmap': 'gray',
-                              'norm': norm,
-                              'interpolation': 'nearest',
-                              'origin': 'lower'
-                              }
+            self.plot_settings['norm'] = colors.Normalize()
         if plot_settings:
             self.plot_settings.update(plot_settings)
 
@@ -478,7 +506,7 @@ class GenericMap(NDData):
         --------
         >>> from sunpy.map import Map
         >>> import sunpy.data.sample  # doctest: +REMOTE_DATA
-        >>> smap = Map(sunpy.data.sample.AIA_171_IMAGE)  # doctest: +REMOTE_DATA
+        >>> smap = Map(sunpy.data.sample.AIA_171_IMAGE)  # doctest: +REMOTE_DATA +IGNORE_WARNINGS
         >>> smap.quicklook()  # doctest: +SKIP
 
         (which will open the following content in the default web browser)
@@ -527,7 +555,7 @@ class GenericMap(NDData):
     @property
     def quantity(self):
         """Unitful representation of the map data."""
-        return u.Quantity(self.data, self.unit, copy=False)
+        return u.Quantity(self.data, self.unit, copy=_NUMPY_COPY_IF_NEEDED)
 
     def _new_instance_from_op(self, new_data):
         """
@@ -535,7 +563,7 @@ class GenericMap(NDData):
         operations.
         """
         new_meta = copy.deepcopy(self.meta)
-        new_meta['bunit'] = new_data.unit.to_string('fits')
+        new_meta['bunit'] = new_data.unit.to_string()
         return self._new_instance(new_data.value, new_meta, plot_settings=self.plot_settings)
 
     def __neg__(self):
@@ -568,6 +596,7 @@ class GenericMap(NDData):
     def __rmul__(self, value):
         return self.__mul__(value)
 
+    @check_arithmetic_compatibility
     def __truediv__(self, value):
         return self.__mul__(1/value)
 
@@ -593,6 +622,25 @@ class GenericMap(NDData):
     def wcs(self):
         """
         The `~astropy.wcs.WCS` property of the map.
+
+        Notes
+        -----
+        ``dateobs`` is always populated with the "canonical" observation time as
+        provided by the `.date` property.  This will commonly be the DATE-OBS key if it
+        is in the metadata, but see that property for the logic otherwise.
+
+        ``dateavg`` is always populated with the reference date of the coordinate system
+        as provided by the `.reference_date` property.  This will commonly be the
+        DATE-AVG key if it is in the metadata, but see that property for the logic
+        otherwise.
+
+        ``datebeg`` is conditonally populated with the start of the observation period
+        as provided by the `.date_start` property, which normally returns a value only
+        if the DATE-BEG key is in the metadata.
+
+        ``dateend`` is conditonally populated with the end of the observation period as
+        provided by the `.date_end` property, which normally returns a value only if the
+        DATE-END key is in the metadata.
         """
         w2 = astropy.wcs.WCS(naxis=2)
 
@@ -610,8 +658,14 @@ class GenericMap(NDData):
         # FITS standard doesn't allow both PC_ij *and* CROTA keywords
         w2.wcs.crota = (0, 0)
         w2.wcs.cunit = self.spatial_units
-        w2.wcs.dateobs = self.date.isot
         w2.wcs.aux.rsun_ref = self.rsun_meters.to_value(u.m)
+
+        w2.wcs.dateobs = self.date.utc.isot
+        w2.wcs.dateavg = self.reference_date.utc.isot
+        if self.date_start is not None:
+            w2.wcs.datebeg = self.date_start.utc.isot
+        if self.date_end is not None:
+            w2.wcs.dateend = self.date_end.utc.isot
 
         # Set observer coordinate information except when we know it is not appropriate (e.g., HGS)
         sunpy_frame = sunpy.coordinates.wcs_utils._sunpy_frame_class_from_ctypes(w2.wcs.ctype)
@@ -641,6 +695,11 @@ class GenericMap(NDData):
         """
         An `astropy.coordinates.BaseCoordinateFrame` instance created from the coordinate
         information for this Map, or None if the frame cannot be determined.
+
+        Notes
+        -----
+        The ``obstime`` for the coordinate frame uses the `.reference_date` property,
+        which may be different from the `.date` property.
         """
         try:
             return astropy.wcs.utils.wcs_to_celestial_frame(self.wcs)
@@ -700,42 +759,53 @@ class GenericMap(NDData):
     def std(self, *args, **kwargs):
         """
         Calculate the standard deviation of the data array, ignoring NaNs.
+
+        This method **does** preserve dask arrays.
         """
         return np.nanstd(self.data, *args, **kwargs)
 
     def mean(self, *args, **kwargs):
         """
         Calculate the mean of the data array, ignoring NaNs.
+
+        This method **does** preserve dask arrays.
         """
         return np.nanmean(self.data, *args, **kwargs)
 
     def min(self, *args, **kwargs):
         """
         Calculate the minimum value of the data array, ignoring NaNs.
+
+        This method **does** preserve dask arrays.
         """
         return np.nanmin(self.data, *args, **kwargs)
 
     def max(self, *args, **kwargs):
         """
         Calculate the maximum value of the data array, ignoring NaNs.
+
+        This method **does** preserve dask arrays.
         """
         return np.nanmax(self.data, *args, **kwargs)
 
     @staticmethod
     def _parse_fits_unit(unit_str):
         replacements = {'gauss': 'G',
-                        'dn': 'ct',
-                        'dn/s': 'ct/s'}
+                        'counts / pixel': 'ct/pix',}
         if unit_str.lower() in replacements:
             unit_str = replacements[unit_str.lower()]
         unit = u.Unit(unit_str, format='fits', parse_strict='silent')
         if isinstance(unit, u.UnrecognizedUnit):
-            warn_metadata(f'Could not parse unit string "{unit_str}" as a valid FITS unit.\n'
-                          f'See {_META_FIX_URL} for how to fix metadata before loading it '
-                          'with sunpy.map.Map.\n'
-                          'See https://fits.gsfc.nasa.gov/fits_standard.html for'
-                          'the FITS unit standards.')
-            unit = None
+            unit = u.Unit(unit_str, parse_strict='silent')
+            # NOTE: Special case DN here as it is not part of the FITS standard, but
+            # is widely used and is also a recognized astropy unit
+            if u.DN not in unit.bases:
+                warn_metadata(f'Could not parse unit string "{unit_str}" as a valid FITS unit.\n'
+                              f'See {_META_FIX_URL} for how to fix metadata before loading it '
+                               'with sunpy.map.Map.\n'
+                               'See https://fits.gsfc.nasa.gov/fits_standard.html for '
+                               'the FITS unit standards.')
+                unit = None
         return unit
 
     @property
@@ -750,7 +820,6 @@ class GenericMap(NDData):
         unit_str = self.meta.get('bunit', None)
         if unit_str is None:
             return
-
         return self._parse_fits_unit(unit_str)
 
 # #### Keyword attribute and other attribute definitions #### #
@@ -859,38 +928,112 @@ class GenericMap(NDData):
         return time
 
     @property
+    def reference_date(self):
+        """
+        The reference date for the coordinate system.
+
+        This date is used to define the ``obstime`` of the coordinate frame and often
+        the ``obstime`` of the observer.  Be aware that this date can be different from
+        the "canonical" observation time (see the `.GenericMap.date` property).
+
+        The reference date is determined using this order of preference:
+
+        1. The ``DATE-AVG`` key in the meta.
+        2. The ``DATE-OBS`` key in the meta.
+        3. The ``DATE-BEG`` key in the meta.
+        4. The ``DATE-END`` key in the meta.
+        5. The `.GenericMap.date` property as a fallback (which, if not
+           overridden, would be the current time if the above keywords are missing).
+
+        See Also
+        --------
+        date : The observation time.
+        date_start : The start time of the observation.
+        date_end : The end time of the observation.
+        date_average : The average time of the observation.
+
+        Notes
+        -----
+        The FITS standard implies that, but does not expressly require, the DATE-AVG keyword
+        to be the reference date.
+        """
+        return (
+            self._get_date('date-avg') or
+            self._get_date('date-obs') or
+            self._get_date('date-beg') or
+            self._get_date('date-end') or
+            self.date
+        )
+
+    def _set_reference_date(self, date):
+        """
+        Set the reference date using the same priority as `.GenericMap.reference_date`.
+
+        If a source subclass overrides `.GenericMap.reference_date`, it should override
+        this private method as well.
+        """
+        for keyword in ['date-avg', 'date-obs', 'date-beg', 'date-end']:
+            if keyword in self.meta:
+                self.meta[keyword] = parse_time(date).utc.isot
+                return
+        self._set_date(date)
+
+    @property
     def date(self):
         """
-        Image observation time.
+        The observation time.
 
-        For different combinations of map metadata this can return either
-        the start time, end time, or a time between these. It is recommended
-        to use `~sunpy.map.GenericMap.date_average`,
-        `~sunpy.map.GenericMap.date_start`, or `~sunpy.map.GenericMap.date_end`
-        instead if you need one of these specific times.
+        This time is the "canonical" way to refer to an observation, which is commonly
+        the start of the observation, but can be a different time.  In comparison, the
+        `.GenericMap.date_start` property is unambigiously the start of the observation.
 
-        Taken from, in order of preference:
+        The observation time is determined using this order of preference:
 
-        1. The DATE-OBS FITS keyword
-        2. `~sunpy.map.GenericMap.date_average`
-        3. `~sunpy.map.GenericMap.date_start`
-        4. `~sunpy.map.GenericMap.date_end`
+        1. The ``DATE-OBS`` or ``DATE_OBS`` FITS keywords
+        2. `.GenericMap.date_start`
+        3. `.GenericMap.date_average`
+        4. `.GenericMap.date_end`
         5. The current time
+
+        See Also
+        --------
+        reference_date : The reference date for the the coordinate system
+        date_start : The start time of the observation.
+        date_end : The end time of the observation.
+        date_average : The average time of the observation.
         """
-        time = self._date_obs
-        time = time or self.date_average
-        time = time or self.date_start
-        time = time or self.date_end
+        time = (
+            self._date_obs or
+            self.date_start or
+            self.date_average or
+            self.date_end
+        )
 
         if time is None:
             if self._default_time is None:
                 warn_metadata("Missing metadata for observation time, "
                               "setting observation time to current time. "
-                              "Set the 'DATE-AVG' FITS keyword to prevent this warning.")
+                              "Set the 'DATE-OBS' FITS keyword to prevent this warning.")
                 self._default_time = parse_time('now')
             time = self._default_time
 
         return time
+
+    def _set_date(self, date):
+        """
+        Set the observation time by setting DATE-OBS.
+
+        If a source subclass overrides `.GenericMap.date`, it should override
+        this private method as well.
+
+        Notes
+        -----
+        This method will additionally always remove DATE_OBS (note the underscore),
+        if present.
+        """
+        if 'date_obs' in self.meta:
+            del self.meta['date_obs']
+        self.meta['date-obs'] = parse_time(date).utc.isot
 
     @property
     def detector(self):
@@ -950,7 +1093,7 @@ class GenericMap(NDData):
         if 'waveunit' in self.meta:
             return u.Unit(self.meta['waveunit'])
         else:
-            wunit = sunpy.io._fits.extract_waveunit(self.meta)
+            wunit = extract_waveunit(self.meta)
             if wunit is not None:
                 return u.Unit(wunit)
 
@@ -1173,12 +1316,17 @@ class GenericMap(NDData):
     def observer_coordinate(self):
         """
         The Heliographic Stonyhurst Coordinate of the observer.
+
+        Notes
+        -----
+        The ``obstime`` for this coordinate uses the `.reference_date` property, which
+        may be different from the `.date` property.
         """
         warning_message = []
         for keys, kwargs in self._supported_observer_coordinates:
             missing_keys = set(keys) - self.meta.keys()
             if not missing_keys:
-                sc = SkyCoord(obstime=self.date, **kwargs)
+                sc = SkyCoord(obstime=self.reference_date, **kwargs)
                 # If the observer location is supplied in Carrington coordinates,
                 # the coordinate's `observer` attribute should be set to "self"
                 if isinstance(sc.frame, HeliographicCarrington):
@@ -1208,7 +1356,7 @@ class GenericMap(NDData):
             warning_message = (["Missing metadata for observer: assuming Earth-based observer."]
                                + warning_message + [""])
             warn_metadata("\n".join(warning_message), stacklevel=3)
-            return get_earth(self.date)
+            return get_earth(self.reference_date)
 
     @property
     def heliographic_latitude(self):
@@ -1223,14 +1371,14 @@ class GenericMap(NDData):
     @property
     def carrington_latitude(self):
         """Observer Carrington latitude."""
-        hgc_frame = HeliographicCarrington(observer=self.observer_coordinate, obstime=self.date,
+        hgc_frame = HeliographicCarrington(observer=self.observer_coordinate, obstime=self.reference_date,
                                            rsun=self.rsun_meters)
         return self.observer_coordinate.transform_to(hgc_frame).lat
 
     @property
     def carrington_longitude(self):
         """Observer Carrington longitude."""
-        hgc_frame = HeliographicCarrington(observer=self.observer_coordinate, obstime=self.date,
+        hgc_frame = HeliographicCarrington(observer=self.observer_coordinate, obstime=self.reference_date,
                                            rsun=self.rsun_meters)
         return self.observer_coordinate.transform_to(hgc_frame).lon
 
@@ -1318,7 +1466,7 @@ class GenericMap(NDData):
         -----
         In many cases this is a simple rotation matrix, hence the property name.
         It general it does not have to be a pure rotation matrix, and can encode
-        other transformations e.g., skews for non-orthgonal coordinate systems.
+        other transformations e.g., skews for non-orthogonal coordinate systems.
         """
         if any(key in self.meta for key in ['PC1_1', 'PC1_2', 'PC2_1', 'PC2_2']):
             return np.array(
@@ -1392,7 +1540,7 @@ class GenericMap(NDData):
         """
         A `~astropy.io.fits.Header` representation of the ``meta`` attribute.
         """
-        return sunpy.io._fits.header_to_fits(self.meta)
+        return header_to_fits(self.meta)
 
 # #### Miscellaneous #### #
     def _get_cmap_name(self):
@@ -1486,18 +1634,18 @@ class GenericMap(NDData):
         Parameters
         ----------
         filepath : `str`
-            Location to save file to.
+            Location to save the file to.
+            If ``filepath`` ends with ".asdf" and ``filetype="auto"``, an ASDF file will be created.
         filetype : `str`, optional
-            Any supported file extension, defaults to ``"auto"``.
+            The file format to save the map in. Defaults to ``"auto"`` which infers
+            the format from the file extension. Supported formats include FITS, JP2, and ASDF.
         hdu_type : `~astropy.io.fits.hdu.base.ExtensionHDU` instance or class, optional
-            By default, a FITS file is written with the map in its primary HDU.
-            If a type is given, a new HDU of this type will be created.
-            If a HDU instance is given, its data and header will be updated from the map.
-            Then that HDU instance will be written to the file.
-            The example below uses `astropy.io.fits.CompImageHDU` to compress the map.
+            For FITS files, this specifies the type of HDU to write. By default, the map is saved
+            in the primary HDU. If an HDU type or instance is provided, the map data and header will
+            be written to that HDU. For example, `astropy.io.fits.CompImageHDU` can be used to compress the map.
         kwargs :
-            Any additional keyword arguments are passed to
-            `~sunpy.io.write_file`.
+            Any additional keyword arguments are passed to `~sunpy.io._file_tools.write_file`
+            or `asdf.AsdfFile.write_to`.
 
         Notes
         -----
@@ -1505,16 +1653,26 @@ class GenericMap(NDData):
         of the given data casted to uint8 values in order to support
         the JPEG2000 format.
 
+        Saving with the ``.asdf`` extension will save the map as an ASDF file, storing the map's
+        attributes under the key ``'sunpymap'`` in the ASDF tree.
+
         Examples
         --------
         >>> from astropy.io.fits import CompImageHDU
         >>> from sunpy.map import Map
         >>> import sunpy.data.sample  # doctest: +REMOTE_DATA
-        >>> aia_map = Map(sunpy.data.sample.AIA_171_IMAGE)  # doctest: +REMOTE_DATA
-        >>> aia_map.save("aia171.fits", hdu_type=CompImageHDU)  # doctest: +REMOTE_DATA
+        >>> aia_map = Map(sunpy.data.sample.AIA_171_IMAGE)  # doctest: +REMOTE_DATA +IGNORE_WARNINGS
+        >>> aia_map.save("aia171.fits", hdu_type=CompImageHDU)  # doctest: +REMOTE_DATA +IGNORE_WARNINGS
+        >>> aia_map.save("aia171.asdf")  # doctest: +REMOTE_DATA
         """
-        io.write_file(filepath, self.data, self.meta, filetype=filetype,
-                      **kwargs)
+        if filetype.lower() == "asdf" or (filetype.lower() == "auto" and str(filepath).lower().endswith(".asdf")):
+            import asdf
+            asdf.AsdfFile({'sunpymap': self}).write_to(str(filepath), **kwargs)
+        else:
+            write_file(filepath, self.data, self.meta, filetype=filetype, **kwargs)
+
+
+
 
 # #### Image processing routines #### #
 
@@ -1526,6 +1684,8 @@ class GenericMap(NDData):
         Uses the same parameters and creates the same coordinate lookup points
         as IDL''s congrid routine, which apparently originally came from a
         VAX/VMS routine of the same name.
+
+        This method **does not** preserve dask arrays.
 
         Parameters
         ----------
@@ -1596,6 +1756,8 @@ class GenericMap(NDData):
         neither an angle or a rotation matrix are specified, the map will be
         rotated by the rotation information in the metadata, which should derotate
         the map so that the pixel axes are aligned with world-coordinate axes.
+
+        This method **does not** preserve dask arrays.
 
         Parameters
         ----------
@@ -1697,12 +1859,13 @@ class GenericMap(NDData):
         unpad_x = -np.min((diff[0], 0))
         unpad_y = -np.min((diff[1], 0))
 
-        # Numpy 1.20+ prevents np.pad from padding with NaNs in integer arrays
-        # Before it would be cast to 0, but now it raises an error.
-        if version.parse(np.__version__) < version.parse("1.20.0") and issubclass(self.data.dtype.type, numbers.Integral) and (missing % 1 != 0):
-            warn_user("The specified `missing` value is not an integer, but the data "
-                      "array is of integer type, so the output may be strange.")
-        # Pad the image array
+        # Raise an informative error message if trying to pad an integer array with NaNs
+        if (pad_x > 0 or pad_y > 0) and issubclass(self.data.dtype.type, numbers.Integral) and (missing % 1 != 0):
+            raise ValueError("The underlying data is integers, but the fill value for missing "
+                             "pixels cannot be cast to an integer, which is the case for the "
+                             "default fill value of NaN.  Set the `missing` keyword to an "
+                             "appropriate integer value for the data set.")
+
         new_data = np.pad(self.data,
                           ((pad_y, pad_y), (pad_x, pad_x)),
                           mode='constant',
@@ -1738,6 +1901,8 @@ class GenericMap(NDData):
         new_meta['crval2'] = rotation_center[1].value
         new_meta['crpix1'] = new_reference_pixel[0] + 1  # FITS pixel origin is 1
         new_meta['crpix2'] = new_reference_pixel[1] + 1  # FITS pixel origin is 1
+        new_meta['NAXIS1'] = new_data.shape[1]
+        new_meta['NAXIS2'] = new_data.shape[0]
 
         # Unpad the array if necessary
         if unpad_x > 0:
@@ -1786,6 +1951,8 @@ class GenericMap(NDData):
         smallest array which contains all four corners of the rectangle as
         defined in world coordinates is returned.
 
+        This method **does** preserve dask arrays.
+
         Parameters
         ----------
         bottom_left : `astropy.units.Quantity` or `~astropy.coordinates.SkyCoord`
@@ -1819,7 +1986,7 @@ class GenericMap(NDData):
         >>> from astropy.coordinates import SkyCoord
         >>> import sunpy.map
         >>> import sunpy.data.sample  # doctest: +REMOTE_DATA
-        >>> aia = sunpy.map.Map(sunpy.data.sample.AIA_171_IMAGE)  # doctest: +REMOTE_DATA
+        >>> aia = sunpy.map.Map(sunpy.data.sample.AIA_171_IMAGE)  # doctest: +REMOTE_DATA +IGNORE_WARNINGS
         >>> bl = SkyCoord(-300*u.arcsec, -300*u.arcsec, frame=aia.coordinate_frame)  # doctest: +REMOTE_DATA
         >>> tr = SkyCoord(500*u.arcsec, 500*u.arcsec, frame=aia.coordinate_frame)  # doctest: +REMOTE_DATA
         >>> aia.submap(bl, top_right=tr)   # doctest: +REMOTE_DATA
@@ -1905,6 +2072,17 @@ class GenericMap(NDData):
         # parse input arguments
         pixel_corners = u.Quantity(self._parse_submap_input(
             bottom_left, top_right, width, height)).T
+
+        msg = (
+            "The provided input coordinates to ``submap`` when transformed to the target "
+            "coordinate frame contain NaN values and cannot be used to crop the map. "
+            "The most common reason for NaN values is transforming off-disk 2D "
+            "coordinates without specifying an assumption (e.g., via the"
+            "`sunpy.coordinates.SphericalScreen()` context manager) that allows "
+            "such coordinates to be interpreted as 3D coordinates."
+        )
+        if np.any(np.isnan(pixel_corners)):
+            raise ValueError(msg)
 
         # The pixel corners result is in Cartesian order, so the first index is
         # columns and the second is rows.
@@ -2012,6 +2190,8 @@ class GenericMap(NDData):
         """Returns a new map consisting of superpixels formed by applying
         'func' to the original map data.
 
+        This method **does** preserve dask arrays.
+
         Parameters
         ----------
         dimensions : tuple
@@ -2037,10 +2217,6 @@ class GenericMap(NDData):
         -------
         out : `~sunpy.map.GenericMap` or subclass
             A new Map which has superpixels of the required size.
-
-        References
-        ----------
-        | `Summarizing blocks of an array using a moving window <https://mail.scipy.org/pipermail/numpy-discussion/2010-July/051760.html>`_
         """
 
         # Note: because the underlying ndarray is transposed in sense when
@@ -2154,7 +2330,7 @@ class GenericMap(NDData):
         return wcsaxes_compat.wcsaxes_heliographic_overlay(axes,
                                                            grid_spacing=grid_spacing,
                                                            annotate=annotate,
-                                                           obstime=self.date,
+                                                           obstime=self.reference_date,
                                                            rsun=self.rsun_meters,
                                                            observer=self.observer_coordinate,
                                                            system=system,
@@ -2312,7 +2488,55 @@ class GenericMap(NDData):
             raise u.UnitsError("This map has no unit, so levels can only be specified in percent "
                                "or in u.dimensionless_unscaled units.")
 
-    def draw_contours(self, levels, axes=None, **contour_args):
+
+    def _update_contour_args(self, contour_args):
+        """
+        Updates ``contour_args`` with values from ``plot_settings``.
+
+        Parameters
+        ----------
+        contour_args : dict
+            A dictionary of arguments to be used for contour plotting.
+
+        Returns
+        -------
+        dict
+            The updated ``contour_args`` dictionary.
+
+        Notes
+        -----
+        - 'cmap': Set to `None` to avoid the error "ValueError: Either colors or cmap must be None".
+        - 'interpolation': Removed because Matplotlib's contour function raises the warning
+        "The following kwargs were not used by contour: 'interpolation'".
+        - 'origin': If `'origin': 'lower'` is present, it is replaced with `'origin': None`,
+        as `None` is the default value for Matplotlib's contour plots.
+        """
+        plot_settings = self.plot_settings.copy()
+        contour_args_copy = contour_args.copy()
+        contour_args.update(plot_settings)
+        # Define default settings for normal plots and contour-specific updates
+        original_plot_defaults = {
+            'origin': 'lower',
+        }
+        default_contour_param = {
+            'origin': None,
+        }
+        # Replace conflicting settings with contour defaults
+        for key in original_plot_defaults:
+            if key in contour_args and contour_args[key] == original_plot_defaults[key]:
+                contour_args[key] = default_contour_param[key]
+        # 'cmap' cannot be used for contour plots when levels are not None,
+        # which is the case in composite maps.
+        contour_args['cmap'] = None
+        # custom 'norm' cannot be passed through plot_settings
+        contour_args['norm'] = None
+        # If 'draw_contour' is used, setting 'norm' and 'cmap' to None ensures the method arguments are applied.
+        contour_args.update(contour_args_copy)
+        contour_args.pop('interpolation')
+        return contour_args
+
+
+    def draw_contours(self, levels, axes=None, *, fill=False, **contour_args):
         """
         Draw contours of the data.
 
@@ -2325,6 +2549,10 @@ class GenericMap(NDData):
         axes : `matplotlib.axes.Axes`
             The axes on which to plot the contours. Defaults to the current
             axes.
+        fill : `bool`, optional
+            Determines the style of the contours:
+            - If `False` (default), contours are drawn as lines using :meth:`~matplotlib.axes.Axes.contour`.
+            - If `True`, contours are drawn as filled regions using :meth:`~matplotlib.axes.Axes.contourf`.
 
         Returns
         -------
@@ -2335,10 +2563,11 @@ class GenericMap(NDData):
         Notes
         -----
         Extra keyword arguments to this function are passed through to the
-        `~matplotlib.axes.Axes.contour` function.
+        corresponding matplotlib method.
         """
-        axes = self._check_axes(axes)
+        contour_args = self._update_contour_args(contour_args)
 
+        axes = self._check_axes(axes)
         levels = self._process_levels_arg(levels)
 
         # Pixel indices
@@ -2351,14 +2580,31 @@ class GenericMap(NDData):
         # We do this instead of using the `transform` keyword argument so that Matplotlib does not
         # get confused about the bounds of the contours
         if self.wcs is not axes.wcs:
-            transform = axes.get_transform(self.wcs) - axes.transData  # pixel->pixel transform
+            if "transform" in contour_args:
+                transform_orig = contour_args.pop("transform")
+            else:
+                transform_orig = axes.get_transform(self.wcs)
+            transform = transform_orig - axes.transData  # pixel->pixel transform
             x_1d, y_1d = transform.transform(np.stack([x.ravel(), y.ravel()]).T).T
             x, y = np.reshape(x_1d, x.shape), np.reshape(y_1d, y.shape)
 
             # Mask out the data array anywhere the coordinate arrays are not finite
             data = np.ma.array(data, mask=~np.logical_and(np.isfinite(x), np.isfinite(y)))
 
-        cs = axes.contour(x, y, data, levels, **contour_args)
+        if fill:
+            # Ensure we have more than one level if fill is True
+            if len(levels) == 1:
+                max_val = np.nanmax(self.data)
+                # Ensure the existing level is less than max_val
+                if levels[0] < max_val:
+                    levels = np.append(levels, max_val)
+                else:
+                    raise ValueError(
+                        f"The provided level ({levels[0]}) is not smaller than the maximum data value ({max_val}). "
+                        "Contour level must be smaller than the maximum data value to use `fill=True`.")
+            cs = axes.contourf(x, y, data, levels, **contour_args)
+        else:
+            cs = axes.contour(x, y, data, levels, **contour_args)
         return cs
 
     @peek_show
@@ -2416,8 +2662,9 @@ class GenericMap(NDData):
 
         return figure
 
+    @deprecate_positional_args_since(since="6.0.0")
     @u.quantity_input
-    def plot(self, annotate=True, axes=None, title=True, autoalign=False,
+    def plot(self, *, annotate=True, axes=None, title=True, autoalign=False,
              clip_interval: u.percent = None, **imshow_kwargs):
         """
         Plots the map object using matplotlib, in a method equivalent
@@ -2467,9 +2714,10 @@ class GenericMap(NDData):
         beyond the solar disk may not appear, which may also inhibit Matplotlib's
         autoscaling of the plot limits.  The plot limits can be set manually.
         To preserve the off-disk parts of the map, using the
-        :meth:`~sunpy.coordinates.Helioprojective.assume_spherical_screen` context
+        `~sunpy.coordinates.SphericalScreen` context
         manager may be appropriate.
         """
+        # Todo: remove this when deprecate_positional_args_since is removed
         # Users sometimes assume that the first argument is `axes` instead of `annotate`
         if not isinstance(annotate, bool):
             raise TypeError("You have provided a non-boolean value for the `annotate` parameter. "
@@ -2501,41 +2749,21 @@ class GenericMap(NDData):
 
             # WCSAxes has unit identifiers on the tick labels, so no need
             # to add unit information to the label
-            spatial_units = [None, None]
             ctype = axes.wcs.wcs.ctype
-
-            axes.set_xlabel(axis_labels_from_ctype(ctype[0],
-                                                   spatial_units[0]))
-            axes.set_ylabel(axis_labels_from_ctype(ctype[1],
-                                                   spatial_units[1]))
+            axes.coords[0].set_axislabel(axis_labels_from_ctype(ctype[0], None))
+            axes.coords[1].set_axislabel(axis_labels_from_ctype(ctype[1], None))
 
         # Take a deep copy here so that a norm in imshow_kwargs doesn't get modified
         # by setting it's vmin and vmax
         imshow_args.update(copy.deepcopy(imshow_kwargs))
 
         if clip_interval is not None:
-            if len(clip_interval) == 2:
-                clip_percentages = clip_interval.to('%').value
-                vmin, vmax = AsymmetricPercentileInterval(*clip_percentages).get_limits(self.data)
-            else:
-                raise ValueError("Clip percentile interval must be specified as two numbers.")
-
+            vmin, vmax = _clip_interval(self.data, clip_interval)
             imshow_args['vmin'] = vmin
             imshow_args['vmax'] = vmax
 
-        msg = ('Cannot manually specify {0}, as the norm '
-               'already has {0} set. To prevent this error set {0} on '
-               '`m.plot_settings["norm"]` or the norm passed to `m.plot`.')
-        if imshow_args.get('norm', None) is not None:
-            norm = imshow_args['norm']
-            if 'vmin' in imshow_args:
-                if norm.vmin is not None:
-                    raise ValueError(msg.format('vmin'))
-                norm.vmin = imshow_args.pop('vmin')
-            if 'vmax' in imshow_args:
-                if norm.vmax is not None:
-                    raise ValueError(msg.format('vmax'))
-                norm.vmax = imshow_args.pop('vmax')
+        if (norm := imshow_args.get('norm', None)) is not None:
+            _handle_norm(norm, imshow_args)
 
         if self.mask is None:
             data = self.data
@@ -2580,6 +2808,7 @@ class GenericMap(NDData):
 
         return ret
 
+    @deprecated(since="6.1", alternative="sunpy.map.GenericMap.find_contours")
     def contour(self, level, **kwargs):
         """
         Returns coordinates of the contours for a given level value.
@@ -2588,7 +2817,7 @@ class GenericMap(NDData):
 
         Parameters
         ----------
-        level : float, astropy.units.Quantity
+        level : float, `~astropy.units.Quantity`
             Value along which to find contours in the array. If the map unit attribute
             is not `None`, this must be a `~astropy.units.Quantity` with units
             equivalent to the map data units.
@@ -2605,13 +2834,19 @@ class GenericMap(NDData):
         >>> import astropy.units as u
         >>> import sunpy.map
         >>> import sunpy.data.sample  # doctest: +REMOTE_DATA
-        >>> aia = sunpy.map.Map(sunpy.data.sample.AIA_171_IMAGE)  # doctest: +REMOTE_DATA
-        >>> contours = aia.contour(50000 * u.ct)  # doctest: +REMOTE_DATA
-        >>> print(contours[0])  # doctest: +REMOTE_DATA
-            <SkyCoord (Helioprojective: obstime=2011-06-07T06:33:02.770, rsun=696000.0 km, observer=<HeliographicStonyhurst Coordinate (obstime=2011-06-07T06:33:02.770, rsun=696000.0 km): (lon, lat, radius) in (deg, deg, m)
-        (-0.00406308, 0.04787238, 1.51846026e+11)>): (Tx, Ty) in arcsec
+        >>> aia = sunpy.map.Map(sunpy.data.sample.AIA_171_IMAGE)  # doctest: +REMOTE_DATA +IGNORE_WARNINGS
+        >>> contours = aia.contour(50000 * u.DN)  # doctest: +REMOTE_DATA +IGNORE_WARNINGS
+        >>> contours[0]  # doctest: +REMOTE_DATA +IGNORE_WARNINGS
+        <SkyCoord (Helioprojective: obstime=2011-06-07T06:33:02.880, rsun=696000.0 km, observer=<HeliographicStonyhurst Coordinate (obstime=2011-06-07T06:33:02.880, rsun=696000.0 km): (lon, lat, radius) in (deg, deg, m)
+        (-0.00406429, 0.04787238, 1.51846026e+11)>): (Tx, Ty) in arcsec
         [(719.59798458, -352.60839064), (717.19243987, -353.75348121),
-        ...
+         (715.8820808 , -354.75140718), (714.78652558, -355.05102034),
+         (712.68209174, -357.14645009), (712.68639008, -359.54923801),
+         (713.14112796, -361.95311455), (714.76598031, -363.53013567),
+         (717.17229147, -362.06880784), (717.27714042, -361.9631112 ),
+         (718.43620686, -359.56313541), (718.8672722 , -357.1614    ),
+         (719.58811599, -356.68119768), (721.29217122, -354.76448374),
+         (719.59798458, -352.60839064)]>
 
         See Also
         --------
@@ -2629,6 +2864,81 @@ class GenericMap(NDData):
 
         contours = measure.find_contours(self.data, level=level, **kwargs)
         contours = [self.wcs.array_index_to_world(c[:, 0], c[:, 1]) for c in contours]
+        return contours
+
+    def find_contours(self, level, method='contourpy', **kwargs):
+        """
+        Returns coordinates of the contours for a given level value.
+
+        For details of the contouring algorithm, see :func:`contourpy.contour_generator` or :func:`contourpy.contour_generator`.
+
+        Parameters
+        ----------
+        level : float, astropy.units.Quantity
+            Value along which to find contours in the array. If the map unit attribute
+            is not `None`, this must be a `~astropy.units.Quantity` with units
+            equivalent to the map data units.
+        method : {'contourpy', 'skimage'}
+            Determines which contouring method is used and should
+            be specified as either 'contourpy' or 'skimage'.
+            Defaults to 'contourpy'.
+        kwargs :
+            Additional keyword arguments passed to either :func:`contourpy.contour_generator`
+            or :func:`skimage.measure.find_contours`, depending on the value of the ``method`` argument.
+
+        Returns
+        -------
+        contours: list of (n,2) `~astropy.coordinates.SkyCoord`
+            Coordinates of each contour.
+
+        Examples
+        --------
+        >>> import astropy.units as u
+        >>> import sunpy.map
+        >>> import sunpy.data.sample  # doctest: +REMOTE_DATA
+        >>> aia = sunpy.map.Map(sunpy.data.sample.AIA_171_IMAGE)  # doctest: +REMOTE_DATA +IGNORE_WARNINGS
+        >>> contours = aia.find_contours(50000 * u.DN, method='contourpy')  # doctest: +REMOTE_DATA
+        >>> contours[0]  # doctest: +REMOTE_DATA
+        <SkyCoord (Helioprojective: obstime=2011-06-07T06:33:02.880, rsun=696000.0 km, observer=<HeliographicStonyhurst Coordinate (obstime=2011-06-07T06:33:02.880, rsun=696000.0 km): (lon, lat, radius) in (deg, deg, m)
+            (-0.00406429, 0.04787238, 1.51846026e+11)>): (Tx, Ty) in arcsec
+            [(713.14112796, -361.95311455), (714.76598031, -363.53013567),
+             (717.17229147, -362.06880784), (717.27714042, -361.9631112 ),
+             (718.43620686, -359.56313541), (718.8672722 , -357.1614    ),
+             (719.58811599, -356.68119768), (721.29217122, -354.76448374),
+             (722.00110323, -352.46446792), (722.08933899, -352.36363319),
+             (722.00223989, -351.99536019), (721.67724425, -352.36263712),
+             (719.59798458, -352.60839064), (717.19243987, -353.75348121),
+             (715.8820808 , -354.75140718), (714.78652558, -355.05102034),
+             (712.68209174, -357.14645009), (712.68639008, -359.54923801),
+             (713.14112796, -361.95311455)]>
+
+        See Also
+        --------
+        :func:`contourpy.contour_generator`
+        :func:`skimage.measure.find_contours`
+        """
+        level = self._process_levels_arg(level)
+        if level.size != 1:
+            raise ValueError("level must be a single scalar value")
+        else:
+            # _process_levels_arg converts level to a 1D array, but
+            # find_contours expects a scalar below
+            level = level[0]
+
+        if method == 'contourpy':
+            from contourpy import contour_generator
+
+            gen = contour_generator(z=self.data, **kwargs)
+            contours = gen.lines(level)
+            contours = [self.wcs.array_index_to_world(c[:, 1], c[:, 0]) for c in contours]
+        elif method == 'skimage':
+            from skimage import measure
+
+            contours = measure.find_contours(self.data, level=level, **kwargs)
+            contours = [self.wcs.array_index_to_world(c[:, 0], c[:, 1]) for c in contours]
+        else:
+            raise ValueError(f"Unknown method '{method}'. Use 'contourpy' or 'skimage'.")
+
         return contours
 
     def _check_axes(self, axes, warn_different_wcs=False):
@@ -2661,7 +2971,6 @@ class GenericMap(NDData):
 
         return axes
 
-    @deprecate_positional_args_since("4.1")
     def reproject_to(self, target_wcs, *, algorithm='interpolation', return_footprint=False,
                      **reproject_args):
         """
@@ -2671,6 +2980,8 @@ class GenericMap(NDData):
             This method requires the optional package `reproject` to be installed.
 
         Additional keyword arguments are passed through to the reprojection function.
+
+        This method **does not** preserve dask arrays.
 
         Parameters
         ----------
@@ -2708,6 +3019,10 @@ class GenericMap(NDData):
 
         .. minigallery:: sunpy.map.GenericMap.reproject_to
         """
+        # Check if both context managers are active
+        if ACTIVE_CONTEXTS.get('propagate_with_solar_surface', False) and ACTIVE_CONTEXTS.get('assume_spherical_screen', False):
+            warn_user("Using propagate_with_solar_surface and SphericalScreen together result in loss of off-disk data.")
+
         try:
             import reproject
         except ImportError as exc:
@@ -2736,6 +3051,12 @@ class GenericMap(NDData):
         # Create and return a new GenericMap
         outmap = GenericMap(output_array, target_wcs.to_header(),
                             plot_settings=self.plot_settings)
+
+        # Check rsun mismatch
+        if self.rsun_meters != outmap.rsun_meters:
+            warn_user("rsun mismatch detected: "
+                      f"{self.name}.rsun_meters={self.rsun_meters}; {outmap.name}.rsun_meters={outmap.rsun_meters}. "
+                      "This might cause unexpected results during reprojection.")
 
         if return_footprint:
             return outmap, footprint

@@ -13,7 +13,7 @@ from sunpy.time.time import _variables_for_parse_time_docstring
 from sunpy.util.decorators import add_common_docstring
 from .attr import Range, SimpleAttr
 
-__all__ = ['Physobs', 'Resolution', 'Detector', 'Sample',
+__all__ = ['Physobs', 'Resolution', 'Detector', 'Sample', 'ExtentType', 'Physobs',
            'Level', 'Instrument', 'Wavelength', 'Time', 'Source', 'Provider']
 
 
@@ -64,7 +64,7 @@ class Time(Range):
         # Use exact type checking here, because otherwise it collides with all
         # subclasses of itself which can have completely different search
         # meanings.
-        return type(other) is type(self)
+        return type(other) is type(self)  # NOQA: E721
 
     def __xor__(self, other):
         if not isinstance(other, self.__class__):
@@ -125,7 +125,9 @@ class Wavelength(Range):
                 break
         else:
             raise u.UnitsError(f"This unit is not convertible to any of {supported_units}")
-
+        self.unconverted_value = (wavemin, wavemax)
+        # Note that wave.min and wave.max are not rounded
+        # so floating point issues can arise
         wavemin, wavemax = sorted([wavemin.to(unit), wavemax.to(unit)])
         self.unit = unit
 

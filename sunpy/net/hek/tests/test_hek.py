@@ -1,5 +1,6 @@
 import copy
 
+import numpy as np
 import pytest
 
 from astropy.time import Time
@@ -117,7 +118,7 @@ def test_err_dummyattr_apply():
 
 @pytest.mark.remote_data
 def test_hek_client(hek_result):
-    assert type(hek_result) == hek.hek.HEKTable
+    assert isinstance(hek_result, hek.hek.HEKTable)
 
 
 @pytest.mark.remote_data
@@ -131,7 +132,7 @@ def test_hek_empty_search_result():
 
     h = hek.HEKClient()
     hek_query = h.search(hekTime, hekEvent)
-    assert type(hek_query) == hek.hek.HEKTable
+    assert isinstance(hek_query, hek.hek.HEKTable)
     assert len(hek_query) == 0
 
 
@@ -155,13 +156,13 @@ def test_hek_time_col(hek_result):
 @pytest.mark.remote_data
 def test_vso_time(hek_result):
     ve = hek_result[0].vso_time
-    assert type(ve) == attrs.Time
+    assert isinstance(ve, attrs.Time)
 
 
 @pytest.mark.remote_data
 def test_vso_instrument(hek_result):
     vc = hek_result[1].vso_instrument
-    assert type(vc) == attrs.Instrument
+    assert isinstance(vc, attrs.Instrument)
 
 
 @pytest.mark.remote_data
@@ -179,7 +180,8 @@ def test_mixed_results_get():
                            attrs.hek.FRM.Name == 'SPoCA')
     assert isinstance(result, hek.hek.HEKTable)
     assert len(result) == 89
-    assert result[0]["SOL_standard"] == 'SOL2013-01-31T20:13:31L199C128'
+    # We do not check the full timestamp as the last 8 digits change as data is reprocessed.
+    assert result[0]["SOL_standard"].startswith("SOL2013-01-31T20:13:31")
 
 
 @pytest.mark.remote_data
@@ -191,7 +193,8 @@ def test_mixed_results_get_2():
                            attrs.hek.EventType("FL"))
     assert isinstance(result, hek.hek.HEKTable)
     assert len(result) == 19
-    assert result[0]["SOL_standard"] == 'SOL2011-08-08T01:30:04L247C075'
+    # We do not check the full timestamp as the last 8 digits change as data is reprocessed.
+    assert result[0]["SOL_standard"].startswith("SOL2011-08-08T01:30:04")
 
 
 @pytest.mark.remote_data
@@ -218,3 +221,12 @@ def test_query_multiple_operators():
                             attrs.hek.FL.GOESCls > "M1.0",
                             attrs.hek.OBS.Observatory == "GOES")
     assert len(results) == 7
+
+
+@pytest.mark.remote_data
+def test_missing_times():
+    # Check for https://github.com/sunpy/sunpy/pull/7627#issuecomment-2113451964
+    client = hek.HEKClient()
+    results = client.search(attrs.Time('2024-05-10', '2024-05-12'), attrs.hek.AR.NOAANum == 13664)
+    assert isinstance(results["event_peaktime"][0], np.ma.core.MaskedConstant)
+    assert results["event_peaktime"][3].isot == "2024-05-10T00:13:00.000"

@@ -1,3 +1,4 @@
+import re
 import copy
 import datetime
 from collections import OrderedDict
@@ -18,7 +19,7 @@ import sunpy.timeseries
 from sunpy.tests.helpers import figure_test
 from sunpy.time import TimeRange, parse_time
 from sunpy.timeseries import TimeSeriesMetaData
-from sunpy.util import SunpyDeprecationWarning, SunpyUserWarning
+from sunpy.util import SunpyUserWarning
 from sunpy.util.metadata import MetaDict
 
 # Test fixtures are in ../conftest.py
@@ -65,6 +66,11 @@ def truncation_slice_test_ts_4(eve_test_ts):
     return eve_test_ts.truncate(
         int(3 * len(eve_test_ts.to_dataframe()) / 4), len(eve_test_ts.to_dataframe()), None
     )
+
+
+def test_repr_html(eve_test_ts):
+    with np.errstate(all='ignore'):
+        assert eve_test_ts._repr_html_() is not None
 
 
 def test_truncation_slices(eve_test_ts,
@@ -419,7 +425,7 @@ def test_remove_column(eve_test_ts):
     assert len(removed.columns) == removed.to_dataframe().shape[1]
 
     # Check that removing a non-existent column errors
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=re.escape("Given column name (random column name) not in list of columns")):
         eve_test_ts.remove_column('random column name')
 
 
@@ -476,7 +482,7 @@ def test_empty_ts_invalid_peek(generic_ts):
     a = generic_ts.time_range.start - TimeDelta(2*u.day)
     b = generic_ts.time_range.start - TimeDelta(1*u.day)
     empty_ts = generic_ts.truncate(TimeRange(a, b))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="The timeseries can't be plotted as it has no data present"):
         empty_ts.peek()
 
 
@@ -549,11 +555,6 @@ def test_timeseries_array():
         ts = sunpy.timeseries.TimeSeries(data, {})
         assert isinstance(ts, sunpy.timeseries.GenericTimeSeries)
 
-
-def test_deprecated_positional_peek_args(many_ts):
-    # Check that all positional arguments to peek() are deprecated
-    with pytest.warns(SunpyDeprecationWarning, match='passing these as positional arguments will result in an error'):
-        many_ts.peek(many_ts.columns[0:1])
 
 # TODO:
 # _validate_units

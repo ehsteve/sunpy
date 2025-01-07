@@ -18,16 +18,16 @@ def LCClient():
 @pytest.mark.remote_data
 @pytest.mark.parametrize(("timerange", "url_start", "url_end"), [
     (Time('2012/4/21', '2012/4/21'),
-     'http://lasp.colorado.edu/eve/data_access/evewebdata/quicklook/L0CS/SpWx/2012/20120421_EVE_L0CS_DIODES_1m.txt',
-     'http://lasp.colorado.edu/eve/data_access/evewebdata/quicklook/L0CS/SpWx/2012/20120421_EVE_L0CS_DIODES_1m.txt'
+     'https://lasp.colorado.edu/eve/data_access/eve_data/quicklook/L0CS/SpWx/2012/20120421_EVE_L0CS_DIODES_1m.txt',
+     'https://lasp.colorado.edu/eve/data_access/eve_data/quicklook/L0CS/SpWx/2012/20120421_EVE_L0CS_DIODES_1m.txt'
      ),
     (Time('2012/5/5', '2012/5/6'),
-     'http://lasp.colorado.edu/eve/data_access/evewebdata/quicklook/L0CS/SpWx/2012/20120505_EVE_L0CS_DIODES_1m.txt',
-     'http://lasp.colorado.edu/eve/data_access/evewebdata/quicklook/L0CS/SpWx/2012/20120506_EVE_L0CS_DIODES_1m.txt',
+     'https://lasp.colorado.edu/eve/data_access/eve_data/quicklook/L0CS/SpWx/2012/20120505_EVE_L0CS_DIODES_1m.txt',
+     'https://lasp.colorado.edu/eve/data_access/eve_data/quicklook/L0CS/SpWx/2012/20120506_EVE_L0CS_DIODES_1m.txt',
      ),
     (Time('2012/7/7', '2012/7/14'),
-     'http://lasp.colorado.edu/eve/data_access/evewebdata/quicklook/L0CS/SpWx/2012/20120707_EVE_L0CS_DIODES_1m.txt',
-     'http://lasp.colorado.edu/eve/data_access/evewebdata/quicklook/L0CS/SpWx/2012/20120714_EVE_L0CS_DIODES_1m.txt',
+     'https://lasp.colorado.edu/eve/data_access/eve_data/quicklook/L0CS/SpWx/2012/20120707_EVE_L0CS_DIODES_1m.txt',
+     'https://lasp.colorado.edu/eve/data_access/eve_data/quicklook/L0CS/SpWx/2012/20120714_EVE_L0CS_DIODES_1m.txt',
      )
 ])
 def test_get_url_for_time_range(LCClient, timerange, url_start, url_end):
@@ -110,11 +110,6 @@ def test_levels(time):
     qr = Fido.search(time, eve_a, a.Level.zero)
     clients = {type(a.client) for a in qr}
     assert clients == {eve.EVEClient}
-
-    # This is broken because the VSO Eve client doesn't provide a way of allowing Level.
-    # qr = Fido.search(time, eve_a, a.Level.zero | a.Level.one)
-    # clients = {type(a.client) for a in qr}
-    # assert clients == {eve.EVEClient}
 
 
 def test_attr_reg():

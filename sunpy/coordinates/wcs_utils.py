@@ -1,15 +1,10 @@
-import numpy as np
 
 import astropy.units as u
 import astropy.wcs.utils
-from astropy.coordinates import (
-    ITRS,
-    BaseCoordinateFrame,
-    CartesianRepresentation,
-    SkyCoord,
-    SphericalRepresentation,
-)
+from astropy.coordinates import BaseCoordinateFrame, SkyCoord
 from astropy.wcs import WCS
+from astropy.wcs.utils import obsgeo_to_frame
+from astropy.wcs.wcsapi.fitswcs import custom_ctype_to_ucd_mapping
 
 from sunpy import log
 from .frames import (
@@ -17,67 +12,11 @@ from .frames import (
     HeliographicCarrington,
     HeliographicStonyhurst,
     Helioprojective,
+    HelioprojectiveRadial,
     SunPyBaseCoordinateFrame,
 )
 
 __all__ = ['solar_wcs_frame_mapping', 'solar_frame_to_wcs_mapping']
-
-try:
-    # TODO: Remove vendored version after Astropy 5.0
-    from astropy.wcs.utils import obsgeo_to_frame
-except ImportError:
-    def obsgeo_to_frame(obsgeo, obstime):
-        """
-        Convert a WCS obsgeo property into an `~builtin_frames.ITRS` coordinate frame.
-
-        Parameters
-        ----------
-        obsgeo : array-like
-            A shape ``(6, )`` array representing ``OBSGEO-[XYZ], OBSGEO-[BLH]`` as
-            returned by ``WCS.wcs.obsgeo``.
-        obstime : time-like
-            The time associated with the coordinate, will be passed to
-            `~.builtin_frames.ITRS` as the obstime keyword.
-
-        Returns
-        -------
-        `~.builtin_frames.ITRS`
-            An `~.builtin_frames.ITRS` coordinate frame
-            representing the coordinates.
-
-        Notes
-        -----
-        The obsgeo array as accessed in a `.WCS` object is a length 6 numpy array
-        where the first three elements are the coordinate in a cartesian
-        representation and the second 3 are the coordinate in a spherical
-        representation.
-
-        This function priorities reading the cartesian coordinates, and will only
-        read the spherical coordinates if the cartesian coordinates are either all
-        zero or any of the cartesian coordinates are non-finite.
-
-        In the case where both the spherical and cartesian coordinates have some
-        non-finite values the spherical coordinates will be returned with the
-        non-finite values included.
-
-        """
-        if (obsgeo is None
-            or len(obsgeo) != 6
-            or np.all(np.array(obsgeo) == 0)
-            or np.all(~np.isfinite(obsgeo))
-        ):  # NOQA
-            raise ValueError(f"Can not parse the 'obsgeo' location ({obsgeo}). "
-                             "obsgeo should be a length 6 non-zero, finite numpy array")
-
-        # If the cartesian coords are zero or have NaNs in them use the spherical ones
-        if np.all(obsgeo[:3] == 0) or np.any(~np.isfinite(obsgeo[:3])):
-            data = SphericalRepresentation(*(obsgeo[3:] * (u.deg, u.deg, u.m)))
-
-        # Otherwise we assume the cartesian ones are valid
-        else:
-            data = CartesianRepresentation(*obsgeo[:3] * u.m)
-
-        return ITRS(data, obstime=obstime)
 
 
 def solar_wcs_frame_mapping(wcs):
@@ -97,7 +36,7 @@ def solar_wcs_frame_mapping(wcs):
     if hasattr(wcs, "coordinate_frame"):
         return wcs.coordinate_frame
 
-    dateobs = wcs.wcs.dateavg or wcs.wcs.dateobs or None
+    dateobs = wcs.wcs.dateavg or wcs.wcs.dateobs or wcs.wcs.datebeg or wcs.wcs.dateend or None
 
     # Get observer coordinate from the WCS auxiliary information
     # Note: the order of the entries is important, as it determines which set
@@ -172,6 +111,7 @@ def _sunpy_frame_class_from_ctypes(ctypes):
 
     mapping = {
         Helioprojective: {'HPLN', 'HPLT'},
+        HelioprojectiveRadial: {'HRLN', 'HRLT'},
         HeliographicStonyhurst: {'HGLN', 'HGLT'},
         HeliographicCarrington: {'CRLN', 'CRLT'},
         Heliocentric: {'SOLX', 'SOLY'},
@@ -239,21 +179,28 @@ def solar_frame_to_wcs_mapping(frame, projection='TAN'):
             wcs.wcs.dateobs = frame.obstime.utc.isot
 
         if isinstance(frame, Helioprojective):
-            xcoord = 'HPLN' + '-' + projection
-            ycoord = 'HPLT' + '-' + projection
+            xcoord = f'HPLN-{projection}'
+            ycoord = f'HPLT-{projection}'
             wcs.wcs.cunit = ['arcsec', 'arcsec']
+        elif isinstance(frame, HelioprojectiveRadial):
+            xcoord = f'HRLN-{projection}'
+            ycoord = f'HRLT-{projection}'
+            wcs.wcs.cunit = ['deg', 'arcsec']
         elif isinstance(frame, Heliocentric):
             xcoord = 'SOLX'
             ycoord = 'SOLY'
             wcs.wcs.cunit = ['deg', 'deg']
         elif isinstance(frame, HeliographicCarrington):
-            xcoord = 'CRLN' + '-' + projection
-            ycoord = 'CRLT' + '-' + projection
+            xcoord = f'CRLN-{projection}'
+            ycoord = f'CRLT-{projection}'
             wcs.wcs.cunit = ['deg', 'deg']
         elif isinstance(frame, HeliographicStonyhurst):
-            xcoord = 'HGLN' + '-' + projection
-            ycoord = 'HGLT' + '-' + projection
+            xcoord = f'HGLN-{projection}'
+            ycoord = f'HGLT-{projection}'
             wcs.wcs.cunit = ['deg', 'deg']
+        else:
+            # A subclass not supported by the core library
+            return None
 
     else:
         return None
@@ -265,3 +212,6 @@ def solar_frame_to_wcs_mapping(frame, projection='TAN'):
 
 astropy.wcs.utils.WCS_FRAME_MAPPINGS.append([solar_wcs_frame_mapping])
 astropy.wcs.utils.FRAME_WCS_MAPPINGS.append([solar_frame_to_wcs_mapping])
+
+custom_ctype_to_ucd_mapping({"HRLN": "custom:pos.helioprojectiveradial.lon"})
+custom_ctype_to_ucd_mapping({"HRLT": "custom:pos.helioprojectiveradial.lat"})

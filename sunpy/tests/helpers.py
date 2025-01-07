@@ -2,65 +2,65 @@ import sys
 import platform
 import warnings
 from pathlib import Path
-from platform import python_version
 from functools import wraps
 from importlib.metadata import entry_points
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pytest
-from packaging.version import Version
 
 import astropy
 from astropy.wcs.wcs import FITSFixedWarning
 
-import sunpy.map
+# NOTE: Do not import sunpy subpackages which have optional dependencies here,
+# this module should be importable with no extra dependencies installed.
 
-__all__ = ['skip_windows', 'skip_glymur', 'skip_ana', 'warnings_as_errors', 'asdf_entry_points']
+__all__ = ['skip_windows', 'skip_glymur', 'skip_ana', 'skip_cdf', 'skip_opencv', 'warnings_as_errors', 'asdf_entry_points', 'skip_jsoc']
 
-# SunPy's JPEG2000 capabilities rely on the glymur library.
-# First we check to make sure that glymur imports correctly before proceeding.
 try:
     import glymur
 except ImportError:
     SKIP_GLYMUR = True
 else:
-    # See if we have a C backend
-    if glymur.lib.openjp2.OPENJP2:
-        SKIP_GLYMUR = False
-    else:
-        SKIP_GLYMUR = True
+    # See if we have a C backend installed.
+    # Glymur will not be able to read JPEG2000 files without it.
+    SKIP_GLYMUR = not glymur.lib.openjp2.OPENJP2
 
 try:
     from sunpy.io import _pyana  # NOQA
+    SKIP_ANA = False
 except ImportError:
     SKIP_ANA = True
-else:
-    SKIP_ANA = False
 
 if sys.maxsize > 2**32:
     SKIP_32 = False
 else:
     SKIP_32 = True
 
-skip_windows = pytest.mark.skipif(platform.system() == "Windows", reason="Windows.")
-skip_glymur = pytest.mark.skipif(SKIP_GLYMUR, reason="Glymur can not be imported.")
+try:
+    import cv2  # NOQA
+    SKIP_OPENCV = False
+except ImportError:
+    SKIP_OPENCV = True
+
+try:
+    import cdflib  # NOQA
+    SKIP_CDF = False
+except ImportError:
+    SKIP_CDF = True
+
+
+asdf_entry_points = pytest.mark.skipif(
+    not entry_points().select(group="asdf.resource_mappings", name="sunpy"),
+    reason="No SunPy ASDF entry points.",
+)
 skip_ana = pytest.mark.skipif(SKIP_ANA, reason="ANA is not available.")
-if Version(python_version()) >= Version("3.10.0"):
-    asdf_entry_points = pytest.mark.skipif(
-        not entry_points().select(group="asdf.resource_mappings", name="sunpy"),
-        reason="No SunPy ASDF entry points.",
-    )
-else:
-    asdf_entry_points = pytest.mark.skipif(
-        not any(
-            [
-                enter_point.name == "sunpy"
-                for enter_point in entry_points()["asdf.resource_mappings"]
-            ]
-        ),
-        reason="No SunPy ASDF entry points.",
-    )
+skip_cdf = pytest.mark.skipif(SKIP_CDF, reason="CDFlib is not available.")
+skip_glymur = pytest.mark.skipif(SKIP_GLYMUR, reason="Glymur can not be imported.")
+skip_jsoc = pytest.mark.skip(reason="JSOC is not available.")
+skip_opencv = pytest.mark.skipif(SKIP_OPENCV, reason="opencv is not available.")
+skip_windows = pytest.mark.skipif(platform.system() == "Windows", reason="Windows.")
+
 
 
 @pytest.fixture
@@ -75,11 +75,11 @@ def get_hash_library_name():
     Generate the hash library name for this env.
     """
     import mpl_animators
-    version = mpl_animators.__version__
-    animators_version = "dev" if "+" in version else version.replace('.', '')
+
+    animators_version = "dev" if (("dev" in mpl_animators.__version__) or ("rc" in mpl_animators.__version__)) else mpl_animators.__version__.replace('.', '')
     ft2_version = f"{mpl.ft2font.__freetype_version__.replace('.', '')}"
-    mpl_version = "dev" if ("+" in mpl.__version__) or ("rc" in mpl.__version__) else mpl.__version__.replace('.', '')
-    astropy_version = "dev" if "dev" in astropy.__version__ else astropy.__version__.replace('.', '')
+    mpl_version = "dev" if (("dev" in mpl.__version__) or ("rc" in mpl.__version__)) else mpl.__version__.replace('.', '')
+    astropy_version = "dev" if (("dev" in astropy.__version__) or ("rc" in astropy.__version__)) else astropy.__version__.replace('.', '')
     return f"figure_hashes_mpl_{mpl_version}_ft_{ft2_version}_astropy_{astropy_version}_animators_{animators_version}.json"
 
 
@@ -130,6 +130,8 @@ def no_vso(f):
 
 
 def fix_map_wcs(smap):
+    import sunpy.map
+
     # Helper function to fix a WCS and silence the warnings
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', category=FITSFixedWarning)

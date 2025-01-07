@@ -2,6 +2,7 @@ import urllib
 from unittest import mock
 
 import pytest
+from requests.exceptions import SSLError
 
 from sunpy.net import attrs as a
 from sunpy.net.helio.hec import HECClient
@@ -12,10 +13,20 @@ from sunpy.net.helio.parser import (
     webservice_parser,
     wsdl_retriever,
 )
+from sunpy.util.exceptions import SunpyUserWarning
 
 # Currently helio makes unverified requests - this filter should be removed when
 # https://github.com/sunpy/sunpy/issues/4401 is fixed
 pytestmark = [pytest.mark.filterwarnings('ignore:Unverified HTTPS request is being made')]
+
+@pytest.fixture(scope="session")
+def client():
+    try:
+        client = HECClient()
+        return client
+    # If no links are found, the client should raise a ValueError
+    except ValueError:
+        pytest.xfail("No HELIO working links found.")
 
 
 def wsdl_endpoints():
@@ -73,7 +84,8 @@ def hec_urls():
 
 
 @pytest.mark.remote_data
-def test_webservice_parser():
+def test_webservice_parser(client):  # NOQA: ARG001
+    # The client is used to check if HELIO is working
     result = webservice_parser()
     assert isinstance(result, list)
 
@@ -182,7 +194,7 @@ def test_wsdl_retriever_no_content(mock_endpoint_parser):
     """
     No links found? Raise ValueError
     """
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="No online HELIO servers can be found."):
         wsdl_retriever()
 
 
@@ -202,7 +214,7 @@ def test_wsdl_retriever_no_taverna_urls(mock_taverna_parser, mock_webservice_par
     """
     Unable to find any valid Taverna URLs? Raise ValueError
     """
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="No online HELIO servers can be found."):
         wsdl_retriever()
 
 
@@ -213,7 +225,7 @@ def test_wsdl_retriever_wsdl(mock_taverna_parser, mock_webservice_parser, mock_l
     """
     Unable to find any valid Taverna URLs? Raise ValueError
     """
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="No online HELIO servers can be found."):
         wsdl_retriever()
 
 
@@ -247,14 +259,15 @@ def test_link_test_on_urlerror(mock_link_test):
     link_test('') is None
 
 
-@pytest.fixture(scope="session")
-def client():
-    try:
-        client = HECClient()
-        return client
-    # If no links are found, the client should raise a ValueError
-    except ValueError:
-        pytest.xfail("No HELIO working links found.")
+@mock.patch('sunpy.net.helio.parser.webservice_parser', return_value=wsdl_urls())
+@mock.patch('sunpy.net.helio.parser.taverna_parser', return_value=some_taverna_urls())
+@mock.patch('sunpy.net.helio.parser.link_test', return_value='some text read')
+@mock.patch('sunpy.net.helio.hec.Client', side_effect=SSLError('SSL error'))
+def test_ssl_verify_error(mock_webservice, mock_taverna, mock_link, mock_zeep, caplog):
+    client = HECClient()
+    query = client.search(a.Time('2023/02/03', '2023/02/03'))
+    assert len(query) == 0
+    assert "Set the 'NO_VERIFY_HELIO_SSL' environment variable disable SSL verification for Helio." in caplog.text
 
 
 @pytest.mark.remote_data
@@ -279,8 +292,14 @@ def test_client_search(client):
     start = '2005/01/03'
     end = '2005/12/03'
     table_name = 'rhessi_hxr_flare'
-    res = client.search(a.Time(start, end), a.helio.TableName(table_name), a.helio.MaxRecords(10))
+    with pytest.warns(SunpyUserWarning, match="Number of results is the same as current limit. "):
+        res = client.search(a.Time(start, end), a.helio.TableName(table_name), a.helio.MaxRecords(10))
     assert len(res) == 10
+
+
+def test_max_records_limit():
+    with pytest.raises(ValueError, match="Helio will only return a max of 20000 results."):
+        a.helio.MaxRecords(99999)
 
 
 @pytest.mark.remote_data
@@ -288,7 +307,7 @@ def test_HECResponse_iter(client):
     start = '2005/01/03'
     end = '2005/12/03'
     table_name = 'rhessi_hxr_flare'
-    res = client.search(a.Time(start, end), a.helio.TableName(table_name), a.helio.MaxRecords(10))
+    res = client.search(a.Time(start, end), a.helio.TableName(table_name), a.helio.MaxRecords(10000))
     for i in res:
         # Just to make sure iter still works, check number of columns
         assert len(i) == 13

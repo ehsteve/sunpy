@@ -11,9 +11,11 @@ import astropy.units as u
 from astropy.coordinates import SkyCoord
 from astropy.wcs import WCS
 
+import sunpy.coordinates
 import sunpy.map
+from sunpy.coordinates._transformations import propagate_with_solar_surface
 from sunpy.tests.helpers import figure_test
-from sunpy.util.exceptions import SunpyDeprecationWarning
+from sunpy.util.exceptions import SunpyUserWarning
 
 
 @pytest.fixture
@@ -122,9 +124,18 @@ def test_invalid_inputs(aia171_test_map, hpc_header):
         aia171_test_map.reproject_to(hpc_header, algorithm='something')
 
 
-def test_deprecated_positional_args(aia171_test_map, hpc_header):
-    with pytest.warns(SunpyDeprecationWarning, match=r"Pass algorithm=interpolation as keyword args"):
-        aia171_test_map.reproject_to(hpc_header, 'interpolation')
+def test_rsun_mismatch_warning(aia171_test_map, hpc_header):
+    with pytest.warns(SunpyUserWarning, match="rsun mismatch detected: "):
+        # Modifying the `hpc_header` rsun value to create a mismatch
+        hpc_header["rsun_ref"] += 1
 
-    with pytest.warns(SunpyDeprecationWarning, match=r"Pass algorithm=interpolation, return_footprint=True as keyword args"):
-        aia171_test_map.reproject_to(hpc_header, 'interpolation', True)
+        # Reproject with the mismatched rsun
+        aia171_test_map.reproject_to(hpc_header)
+
+
+def test_reproject_to_warn_using_contexts(aia171_test_map, hpc_header):
+    with propagate_with_solar_surface():
+        with sunpy.coordinates.SphericalScreen(aia171_test_map.observer_coordinate):
+            # Check if a warning is raised if both context managers are used at the same time.
+            with pytest.warns(UserWarning, match="Using propagate_with_solar_surface and SphericalScreen together result in loss of off-disk data."):
+                aia171_test_map.reproject_to(hpc_header)

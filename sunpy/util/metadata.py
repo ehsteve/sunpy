@@ -68,7 +68,10 @@ class MetaDict(OrderedDict):
             self._original_meta = MetaDict(*args, save_original=False)
 
     def __str__(self):
-        return '\n'.join([f'{key}: {item}' for key, item in self.items()])
+        return '\n'.join([f"('{key}': '{item}')" for key, item in self.items()])
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}([{self}])"
 
     # Deliberately a property to prevent external modification
     @property
@@ -140,7 +143,7 @@ class MetaDict(OrderedDict):
         if not isinstance(keycomments, dict):
             raise TypeError(
                 "'keycomments' key must have a value of type `dict`. Found "
-                "the following type: %r" % type(keycomments))
+                f"the following type: {type(keycomments)!r}")
 
         if copy:
             keycomments = keycomments.copy()

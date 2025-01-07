@@ -12,8 +12,6 @@ capabilities:
 
 * :ref:`sphx_glr_generated_gallery_units_and_coordinates_planet_locations.py`
 * :ref:`sphx_glr_generated_gallery_units_and_coordinates_ParkerSolarProbe_trajectory.py`
-
-`astroquery <https://astroquery.readthedocs.io/>`__ needs to be installed.
 """
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -29,7 +27,8 @@ from sunpy.time import parse_time
 ##############################################################################
 # Define the time for the plot as the time when this script is run.
 
-obstime = parse_time('now')
+# This time is fixed as the ephemeris information for STEREO-B is no longer generated
+obstime = parse_time('2024-Oct-17 20:23')
 
 ##############################################################################
 # Define a convenience function to extract the first full orbit from a
@@ -38,6 +37,7 @@ obstime = parse_time('now')
 
 hee_frame = HeliocentricEarthEcliptic(obstime=obstime)
 
+
 def get_first_orbit(coord):
     lon = coord.transform_to(hee_frame).spherical.lon
     shifted = Longitude(lon - lon[0])
@@ -45,6 +45,7 @@ def get_first_orbit(coord):
     if ends.size > 0:
         return coord[:ends[0]]
     return coord
+
 
 ##############################################################################
 # Obtain the locations and trajectories of the various planets and spacecraft.
@@ -70,10 +71,12 @@ mission_coords = {mission: get_first_orbit(get_horizons_coord(mission, {'start':
 # Define a convenience function for converting coordinates to plot positions
 # in the ecliptic plane.
 
+
 def coord_to_heexy(coord):
     coord = coord.transform_to(hee_frame)
     coord.representation_type = 'cartesian'
     return coord.y.to_value('AU'), coord.x.to_value('AU')
+
 
 ##############################################################################
 # Set Matplotlib settings to the desired appearance and initialize the axes.

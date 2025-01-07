@@ -1,3 +1,5 @@
+import re
+
 import numpy as np
 import pytest
 
@@ -21,13 +23,13 @@ from sunpy.sun import constants
 
 
 @pytest.mark.parametrize(("start", "end"), [((0, 0), (0, 45)),
-                                        ((0, 0), (45, 0)),
-                                        ((0, 45), (0, 0)),
-                                        ((45, 0), (0, 0)),
-                                        ((12, 13), (12, 58)),
-                                        ((-10, 6), (-10, 51)),
-                                        ((-20, -50), (-20, -5)),
-                                        ((10, -50), (87.53163324626676, -55))])
+                                            ((0, 0), (45, 0)),
+                                            ((0, 45), (0, 0)),
+                                            ((45, 0), (0, 0)),
+                                            ((12, 13), (12, 58)),
+                                            ((-10, 6), (-10, 51)),
+                                            ((-20, -50), (-20, -5)),
+                                            ((10, -50), (87.53163324626676, -55))])
 def test_great_arc_calculable(start, end):
     c = SkyCoord(start[0]*u.degree, start[1]*u.degree, frame=frames.HeliographicStonyhurst,
                  observer=frames.HeliographicStonyhurst(0*u.deg, 0*u.deg, 1*u.AU))
@@ -153,29 +155,34 @@ def test_great_arc_coordinates(points_requested, points_expected, first_point,
     assert len(distances) == points_expected
     assert u.isclose(distances[-1].value * u.m, last_distance * u.km)
 
-
 # Test that the great arc code rejects wrongly formatted points
-@pytest.mark.parametrize("points", [np.asarray([[0, 0.1], [0.2, 0.3]]),
-                                    np.asarray([0.1, 0.2, -0.1, 0.4]),
-                                    np.asarray([0.3, 1.1, 0.6, 0.7]),
-                                    'strings_not_permitted'])
-def test_great_arc_wrongly_formatted_points(points, aia171_test_map):
+@pytest.mark.parametrize(
+    ("points", "expected_error"),
+    [
+        (np.asarray([[0, 0.1], [0.2, 0.3]]), "One dimensional numpy ndarrays only"),
+        (np.asarray([0.1, 0.2, -0.1, 0.4]), "All value in points array must be strictly >=0 and <=1."),
+        (np.asarray([0.3, 1.1, 0.6, 0.7]), "All value in points array must be strictly >=0 and <=1."),
+        ('strings_not_permitted', "Incorrectly specified \"points\" keyword value."),
+    ]
+    )
+
+def test_great_arc_wrongly_formatted_points(points, expected_error, aia171_test_map):
     coordinate_frame = aia171_test_map.coordinate_frame
     a = SkyCoord(600*u.arcsec, -600*u.arcsec, frame=coordinate_frame)
     b = SkyCoord(-100*u.arcsec, 800*u.arcsec, frame=coordinate_frame)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError,match=re.escape(expected_error)):
         GreatArc(a, b, points=points)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=re.escape(expected_error)):
         GreatArc(a, b).coordinates(points=points)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=re.escape(expected_error)):
         GreatArc(a, b).inner_angles(points=points)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=re.escape(expected_error)):
         GreatArc(a, b).distances(points=points)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=re.escape(expected_error)):
         GreatArc(a, b).distances(points=points)
 
 
@@ -251,14 +258,14 @@ def rectangle_args():
 
 
 def test_rectangle_incomplete_input(rectangle_args):
-    bottom_left, top_right, width, height = rectangle_args
+    bottom_left, _, _, height = rectangle_args
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Invalid input, either bottom_left and top_right or bottom_left and height and width should be provided."):
         get_rectangle_coordinates(bottom_left, height=height)
 
 
 def test_rectangle_invalid_input(rectangle_args):
-    bottom_left, top_right, width, height = rectangle_args
+    _, _, width, height = rectangle_args
 
     with pytest.raises(TypeError):
         get_rectangle_coordinates(width, height=height)
@@ -267,21 +274,21 @@ def test_rectangle_invalid_input(rectangle_args):
 def test_rectangle_all_parameters_passed(rectangle_args):
     bottom_left, top_right, width, height = rectangle_args
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Invalid input, width, height and top_right parameters should not be passed simultaneously."):
         get_rectangle_coordinates(bottom_left, width=width, top_right=top_right, height=height)
 
 
 def test_rectangle_width_height(rectangle_args):
-    bottom_left, top_right, width, height = rectangle_args
+    bottom_left, _, width, height = rectangle_args
 
-    bottom_left_1, top_right_1 = get_rectangle_coordinates(bottom_left, width=width, height=height)
+    _, top_right_1 = get_rectangle_coordinates(bottom_left, width=width, height=height)
 
     assert bottom_left.spherical.lon + width == top_right_1.spherical.lon
     assert bottom_left.spherical.lat + height == top_right_1.spherical.lat
 
 
 def test_rectangle_mismatching_frames_missing_parameters(rectangle_args):
-    bottom_left, top_right, width, height = rectangle_args
+    bottom_left, top_right, _, _ = rectangle_args
     top_right = SkyCoord(10 * u.arcsec, 10 * u.arcsec, frame='heliographic_carrington')
 
     with pytest.raises(ConvertError):
@@ -289,7 +296,7 @@ def test_rectangle_mismatching_frames_missing_parameters(rectangle_args):
 
 
 def test_rectangle_top_right(rectangle_args):
-    bottom_left, top_right, width, height = rectangle_args
+    bottom_left, top_right, _, _ = rectangle_args
 
     bottom_left_1, top_right_1 = get_rectangle_coordinates(bottom_left, top_right=top_right)
 
@@ -300,20 +307,20 @@ def test_rectangle_top_right(rectangle_args):
 
 
 def test_rectangle_bottom_left_different_types(rectangle_args):
-    bottom_left, top_right, width, height = rectangle_args
+    bottom_left, _, width, height = rectangle_args
 
     bottom_left_1, top_right_1 = get_rectangle_coordinates(
         bottom_left.frame, width=width, height=height)
 
     assert bottom_left.spherical.lon + width == top_right_1.spherical.lon
     assert bottom_left.spherical.lat + height == top_right_1.spherical.lat
-    assert type(bottom_left_1) == type(top_right_1) == type(bottom_left.frame)  # noqa: E721
+    assert type(bottom_left_1) == type(top_right_1) == type(bottom_left.frame)  # NOQA: E721
 
     bottom_left_2, top_right_2 = get_rectangle_coordinates(bottom_left, width=width, height=height)
 
     assert bottom_left.spherical.lon + width == top_right_2.spherical.lon
     assert bottom_left.spherical.lat + height == top_right_2.spherical.lat
-    assert type(bottom_left_2) == type(top_right_2) == type(bottom_left)
+    assert type(bottom_left_2) == type(top_right_2) == type(bottom_left)   # NOQA: E721
 
 
 def test_rectangle_bottom_left_vector():
@@ -334,7 +341,7 @@ def test_solar_angle_equivalency_inputs():
         solar_angle_equivalency("earth")
 
     test_coord = SkyCoord(0*u.arcsec, 0*u.arcsec)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Observer must have an observation time, `obstime`."):
         solar_angle_equivalency(test_coord)
 
 

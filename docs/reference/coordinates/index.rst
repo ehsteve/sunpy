@@ -8,6 +8,7 @@ This sub-package contains:
 * A robust framework for working with solar-physics coordinate systems
 * Functions to obtain the locations of solar-system bodies (`sunpy.coordinates.ephemeris`)
 * Functions to calculate Sun-specific coordinate information (`sunpy.coordinates.sun`)
+* Bridge module to enable the use of the `~astropy.coordinates.SkyCoord` API to perform computations using `SPICE <https://naif.jpl.nasa.gov/naif/>`__ kernels (`sunpy.coordinates.spice`)
 
 The SunPy coordinate framework extends the
 :ref:`Astropy coordinates framework <astropy:astropy-coordinates>`.
@@ -66,6 +67,10 @@ Supported Coordinate Systems
      - HPC
      - `~sunpy.coordinates.frames.Helioprojective`
      -
+   * - Helioprojective Radial
+     - HPR
+     - `~sunpy.coordinates.frames.HelioprojectiveRadial`
+     - Uses declination (-90 deg at disk center) rather than impact angle (0 deg at disk center)
    * - Geocentric Earth Equatorial (Mean)
      - GEI
      - `~sunpy.coordinates.frames.GeocentricEarthEquatorial`
@@ -78,6 +83,18 @@ Supported Coordinate Systems
      - GSE
      - `~sunpy.coordinates.frames.GeocentricSolarEcliptic`
      -
+   * - Geomagnetic
+     - MAG
+     - `~sunpy.coordinates.frames.Geomagnetic`
+     -
+   * - Solar Magnetic
+     - SM
+     - `~sunpy.coordinates.frames.SolarMagnetic`
+     -
+   * - GeocentricSolarMagnetospheric
+     - GSM
+     - `~sunpy.coordinates.frames.GeocentricSolarMagnetospheric`
+     -
 
 
 For a description of these coordinate systems,
@@ -85,13 +102,14 @@ see `Thompson (2006) <https://doi.org/10.1051/0004-6361:20054262>`_
 and `Franz & Harper (2002) <https://doi.org/10.1016/S0032-0633(01)00119-2>`_
 (and `corrected version <https://www2.mps.mpg.de/homes/fraenz/systems/systems3art/systems3art.html>`_).
 
-
 Reference/API
 =============
 
 .. automodapi:: sunpy.coordinates
 
 .. automodapi:: sunpy.coordinates.ephemeris
+
+.. automodapi:: sunpy.coordinates.spice
 
 .. automodapi:: sunpy.coordinates.sun
 
@@ -107,10 +125,11 @@ The parts of the following modules that are useful to a typical user are already
 
 .. automodapi:: sunpy.coordinates.frames
 
+.. automodapi:: sunpy.coordinates.screens
+
 .. automodapi:: sunpy.coordinates.metaframes
 
 .. automodapi:: sunpy.coordinates.wcs_utils
-
 
 Attribution
 ===========

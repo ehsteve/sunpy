@@ -15,7 +15,6 @@ import sunpy.io
 from sunpy import config
 from sunpy.time import parse_time
 from sunpy.timeseries.timeseriesbase import GenericTimeSeries
-from sunpy.util.decorators import deprecate_positional_args_since
 from sunpy.util.metadata import MetaDict
 from sunpy.visualization import peek_show
 
@@ -89,7 +88,6 @@ class NoRHTimeSeries(GenericTimeSeries):
         return axes
 
     @peek_show
-    @deprecate_positional_args_since("4.1")
     def peek(self, *, title="Nobeyama Radioheliograph", columns=None, **kwargs):
         """
         Displays the NoRH lightcurve TimeSeries by calling
@@ -127,7 +125,7 @@ class NoRHTimeSeries(GenericTimeSeries):
         filepath : `str`
             The path to the file you want to parse.
         """
-        hdus = sunpy.io.read_file(filepath)
+        hdus = sunpy.io._file_tools.read_file(filepath)
         return cls._parse_hdus(hdus)
 
     @classmethod

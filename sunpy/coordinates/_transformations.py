@@ -15,8 +15,8 @@ This module contains the functions for converting one
 import logging
 from copy import deepcopy
 from functools import wraps
-from contextlib import contextmanager
 
+import erfa
 import numpy as np
 
 import astropy.units as u
@@ -24,6 +24,7 @@ from astropy.constants import c as speed_of_light
 from astropy.coordinates import (
     HCRS,
     ICRS,
+    ITRS,
     BaseCoordinateFrame,
     ConvertError,
     HeliocentricMeanEcliptic,
@@ -38,38 +39,32 @@ from astropy.coordinates.representation import (
     SphericalRepresentation,
     UnitSphericalRepresentation,
 )
-# Import erfa via astropy to make sure we are using the same ERFA library as Astropy
-from astropy.coordinates.sky_coordinate import erfa
 from astropy.coordinates.transformations import FunctionTransform, FunctionTransformWithFiniteDifference
 from astropy.time import Time
 
 from sunpy import log
 from sunpy.sun import constants
+from sunpy.util.decorators import sunpycontextmanager
 from .frames import (
     _J2000,
     GeocentricEarthEquatorial,
     GeocentricSolarEcliptic,
+    GeocentricSolarMagnetospheric,
+    Geomagnetic,
     Heliocentric,
     HeliocentricEarthEcliptic,
     HeliocentricInertial,
     HeliographicCarrington,
     HeliographicStonyhurst,
     Helioprojective,
+    HelioprojectiveRadial,
+    SolarMagnetic,
 )
 
 RSUN_METERS = constants.get('radius').si.to(u.m)
 
 __all__ = ['transform_with_sun_center',
-           'propagate_with_solar_surface',
-           'hgs_to_hgc', 'hgc_to_hgs', 'hcc_to_hpc',
-           'hpc_to_hcc', 'hcc_to_hgs', 'hgs_to_hcc',
-           'hpc_to_hpc',
-           'hcrs_to_hgs', 'hgs_to_hcrs',
-           'hgs_to_hgs', 'hgc_to_hgc', 'hcc_to_hcc',
-           'hme_to_hee', 'hee_to_hme', 'hee_to_hee',
-           'hee_to_gse', 'gse_to_hee', 'gse_to_gse',
-           'hgs_to_hci', 'hci_to_hgs', 'hci_to_hci',
-           'hme_to_gei', 'gei_to_hme', 'gei_to_gei']
+           'propagate_with_solar_surface']
 
 
 # Boolean flag for whether to ignore the motion of the center of the Sun in inertial space
@@ -80,7 +75,7 @@ _ignore_sun_motion = False
 _autoapply_diffrot = None
 
 
-@contextmanager
+@sunpycontextmanager
 def transform_with_sun_center():
     """
     Context manager for coordinate transformations to ignore the motion of the center of the Sun.
@@ -144,7 +139,7 @@ def transform_with_sun_center():
         _ignore_sun_motion = old_ignore_sun_motion
 
 
-@contextmanager
+@sunpycontextmanager
 def propagate_with_solar_surface(rotation_model='howard'):
     """
     Context manager for coordinate transformations to automatically apply solar
@@ -167,7 +162,7 @@ def propagate_with_solar_surface(rotation_model='howard'):
     rotation_model : `str`
         Accepted model names are ``'howard'`` (default), ``'snodgrass'``,
         ``'allen'``, and ``'rigid'``.  See the documentation for
-        :func:`~sunpy.physics.differential_rotation.diff_rot` for the differences
+        :func:`~sunpy.sun.models.differential_rotation` for the differences
         between these models.
 
     Notes
@@ -301,9 +296,9 @@ def _observers_are_equal(obs_1, obs_2):
                            "source observer is different.")
 
     return np.atleast_1d(u.allclose(obs_1.lat, obs_2.lat) and
-                          u.allclose(obs_1.lon, obs_2.lon) and
-                          u.allclose(obs_1.radius, obs_2.radius) and
-                          _times_are_equal(obs_1.obstime, obs_2.obstime)).all()
+                         u.allclose(obs_1.lon, obs_2.lon) and
+                         u.allclose(obs_1.radius, obs_2.radius) and
+                         _times_are_equal(obs_1.obstime, obs_2.obstime)).all()
 
 
 def _check_observer_defined(frame):
@@ -587,6 +582,68 @@ def hpc_to_hpc(from_coo, to_frame):
     return hpc
 
 
+def _matrix_hpc_to_hpr():
+    # Returns the transformation matrix that permutes/swaps axes from HPC to HPR
+
+    # HPR spherical coordinates are a right-handed frame with these equivalent Cartesian axes:
+    #   HPR_X = HPC_Z
+    #   HPR_Y = -HPC_Y
+    #   HPR_Z = -HPC_X
+    # (HPC_X and HPC_Y are not to be confused with HPC_Tx and HPC_Ty)
+    return np.array([[0, 0, 1],
+                     [0, -1, 0],
+                     [-1, 0, 0]])
+
+
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference,
+                                 Helioprojective, HelioprojectiveRadial)
+@_transformation_debug("HPC->HPR")
+def hpc_to_hpr(hpc_coord, hpr_frame):
+    """
+    Convert from Helioprojective Cartesian to Helioprojective Radial.
+    """
+    _check_observer_defined(hpc_coord)
+    _check_observer_defined(hpr_frame)
+
+    # Transform the HPR observer (in HGS) to the HPR obstime in case it's different
+    observer = _transform_obstime(hpr_frame.observer, hpr_frame.obstime)
+
+    # Loopback transform HPC coord to obstime and observer of HPR frame
+    int_frame = Helioprojective(obstime=observer.obstime, observer=observer)
+    int_coord = hpc_coord.transform_to(int_frame)
+
+    # Permute/swap axes from HPC to HPR equivalent Cartesian
+    newrepr = int_coord.cartesian.transform(_matrix_hpc_to_hpr())
+
+    return hpr_frame.realize_frame(newrepr)
+
+
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference,
+                                 HelioprojectiveRadial, Helioprojective)
+@_transformation_debug("HPR->HPC")
+def hpr_to_hpc(hpr_coord, hpc_frame):
+    """
+    Convert from Helioprojective Radial to Helioprojective Cartesian.
+    """
+    _check_observer_defined(hpr_coord)
+    _check_observer_defined(hpc_frame)
+
+    # Permute/swap axes from HPR to HPC equivalent Cartesian
+    newrepr = hpr_coord.cartesian.transform(matrix_transpose(_matrix_hpc_to_hpr()))
+
+    # Transform the HPR observer (in HGS) to the HPR obstime in case it's different
+    observer = _transform_obstime(hpr_coord.observer, hpr_coord.obstime)
+
+    # Complete the conversion of HPR to HPC at the obstime and observer of the HPR coord
+    int_coord = Helioprojective(newrepr, obstime=observer.obstime, observer=observer)
+
+    # Loopback transform HPC as needed
+    return int_coord.transform_to(hpc_frame)
+
+
+frame_transform_graph._add_merged_transform(HelioprojectiveRadial, Helioprojective, HelioprojectiveRadial)
+
+
 def _rotation_matrix_reprs_to_reprs(start_representation, end_representation):
     """
     Return the matrix for the direct rotation from one representation to a second representation.
@@ -595,7 +652,8 @@ def _rotation_matrix_reprs_to_reprs(start_representation, end_representation):
     A = start_representation.to_cartesian()
     B = end_representation.to_cartesian()
     rotation_axis = A.cross(B)
-    rotation_angle = -np.arccos(A.dot(B) / (A.norm() * B.norm()))  # negation is required
+    # Calculate the angle using both cross and dot products to minimize numerical-precision issues
+    rotation_angle = -np.arctan2(rotation_axis.norm(), A.dot(B))  # negation is required
 
     if rotation_angle.isscalar:
         # This line works around some input/output quirks of Astropy's rotation_matrix()
@@ -1076,7 +1134,7 @@ def gei_to_hme(geicoord, hmeframe):
     earth_object_int = geicoord.cartesian.transform(rot_matrix)
 
     # Find the Sun-object vector in the intermediate frame
-    sun_object_int = sun_earth_int + earth_object_int
+    sun_object_int = earth_object_int + sun_earth_int  # add in this order to preserve the original units
     int_coord = int_frame.realize_frame(sun_object_int)
 
     # Convert to the final frame through HCRS
@@ -1097,6 +1155,156 @@ def gei_to_gei(from_coo, to_frame):
         return from_coo.transform_to(HCRS(obstime=from_coo.obstime)).transform_to(to_frame)
 
 
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference,
+                                 ITRS, Geomagnetic)
+@_transformation_debug("GEO->MAG")
+def geo_to_mag(geocoord, magframe):
+    """
+    Convert from Geographic (GEO) to Geomagnetic (MAG)
+    """
+    if magframe.obstime is None:
+        raise ConvertError("To perform this transformation, the coordinate"
+                           " frame needs a specified `obstime`.")
+
+    # First transform the GEO coord to the MAG obstime
+    int_coord = _transform_obstime(geocoord, magframe.obstime)
+
+    lon, lat = magframe.dipole_lonlat
+
+    lat_matrix = rotation_matrix(90*u.deg - lat, 'y')
+    lon_matrix = rotation_matrix(lon, 'z')
+    rot_matrix = lat_matrix @ lon_matrix
+
+    newrepr = int_coord.cartesian.transform(rot_matrix)
+
+    return magframe.realize_frame(newrepr)
+
+
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference,
+                                 Geomagnetic, ITRS)
+@_transformation_debug("MAG->GEO")
+def mag_to_geo(magcoord, geoframe):
+    """
+    Convert from Geomagnetic (MAG) to Geographic (GEO)
+    """
+    if magcoord.obstime is None:
+        raise ConvertError("To perform this transformation, the coordinate"
+                           " frame needs a specified `obstime`.")
+
+    lon, lat = magcoord.dipole_lonlat
+
+    lat_matrix = rotation_matrix(90*u.deg - lat, 'y')
+    lon_matrix = rotation_matrix(lon, 'z')
+    rot_matrix = lat_matrix @ lon_matrix
+
+    newrepr = magcoord.cartesian.transform(matrix_transpose(rot_matrix))
+    int_frame = geoframe.replicate_without_data(obstime=magcoord.obstime)
+    int_coord = int_frame.realize_frame(newrepr)
+
+    return int_coord.transform_to(geoframe)
+
+
+frame_transform_graph._add_merged_transform(Geomagnetic, ITRS, Geomagnetic)
+
+
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference,
+                                 Geomagnetic, SolarMagnetic)
+@_transformation_debug("MAG->SM")
+def mag_to_sm(magcoord, smframe):
+    """
+    Convert from Geomagnetic (MAG) to Solar Magnetic (SM)
+    """
+    if magcoord.obstime is None:
+        raise ConvertError("To perform this transformation, the coordinate"
+                           " frame needs a specified `obstime`.")
+
+    # First transform the MAG coord to the SM obstime
+    int_coord = _transform_obstime(magcoord, smframe.obstime)
+
+    sun = HCRS(0*u.deg, 0*u.deg, 0*u.AU, obstime=int_coord.obstime).transform_to(int_coord)
+
+    rot_matrix = _rotation_matrix_reprs_to_xz_about_z(sun.cartesian)
+
+    newrepr = int_coord.cartesian.transform(rot_matrix)
+
+    return smframe.realize_frame(newrepr)
+
+
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference,
+                                 SolarMagnetic, Geomagnetic)
+@_transformation_debug("SM->MAG")
+def sm_to_mag(smcoord, magframe):
+    """
+    Convert from Solar Magnetic (SM) to Geomagnetic (MAG)
+    """
+    if smcoord.obstime is None:
+        raise ConvertError("To perform this transformation, the coordinate"
+                           " frame needs a specified `obstime`.")
+
+    int_frame = magframe.replicate_without_data(obstime=smcoord.obstime)
+
+    sun = HCRS(0*u.deg, 0*u.deg, 0*u.AU, obstime=int_frame.obstime).transform_to(int_frame)
+
+    rot_matrix = _rotation_matrix_reprs_to_xz_about_z(sun.cartesian)
+
+    newrepr = smcoord.cartesian.transform(matrix_transpose(rot_matrix))
+    int_coord = int_frame.realize_frame(newrepr)
+
+    return int_coord.transform_to(magframe)
+
+
+frame_transform_graph._add_merged_transform(SolarMagnetic, Geomagnetic, SolarMagnetic)
+
+
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference,
+                                 SolarMagnetic, GeocentricSolarMagnetospheric)
+@_transformation_debug("SM->GSM")
+def sm_to_gsm(smcoord, gsmframe):
+    """
+    Convert from Solar Magnetic (SM) to Geocentric Solar Magnetospheric (GSM)
+    """
+    if smcoord.obstime is None:
+        raise ConvertError("To perform this transformation, the coordinate"
+                           " frame needs a specified `obstime`.")
+
+    # First transform the SM coord to the GSM obstime
+    int_coord = _transform_obstime(smcoord, gsmframe.obstime)
+
+    sun = HCRS(0*u.deg, 0*u.deg, 0*u.AU, obstime=int_coord.obstime).transform_to(int_coord)
+
+    rot_matrix = rotation_matrix(-sun.spherical.lat, 'y')
+
+    newrepr = int_coord.cartesian.transform(rot_matrix)
+
+    return gsmframe.realize_frame(newrepr)
+
+
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference,
+                                 GeocentricSolarMagnetospheric, SolarMagnetic)
+@_transformation_debug("GSM->SM")
+def gsm_to_sm(gsmcoord, smframe):
+    """
+    Convert from Geocentric Solar Magnetospheric (GSM) to Solar Magnetic (SM)
+    """
+    if gsmcoord.obstime is None:
+        raise ConvertError("To perform this transformation, the coordinate"
+                           " frame needs a specified `obstime`.")
+
+    int_frame = smframe.replicate_without_data(obstime=gsmcoord.obstime)
+
+    sun = HCRS(0*u.deg, 0*u.deg, 0*u.AU, obstime=int_frame.obstime).transform_to(int_frame)
+
+    rot_matrix = rotation_matrix(-sun.spherical.lat, 'y')
+
+    newrepr = gsmcoord.cartesian.transform(matrix_transpose(rot_matrix))
+    int_coord = int_frame.realize_frame(newrepr)
+
+    return int_coord.transform_to(smframe)
+
+
+frame_transform_graph._add_merged_transform(GeocentricSolarMagnetospheric, SolarMagnetic, GeocentricSolarMagnetospheric)
+
+
 def _make_sunpy_graph():
     """
     Culls down the full transformation graph for SunPy purposes and returns the string version
@@ -1104,9 +1312,10 @@ def _make_sunpy_graph():
     # Frames to keep in the transformation graph
     keep_list = ['icrs', 'hcrs', 'heliocentrictrueecliptic', 'heliocentricmeanecliptic',
                  'heliographic_stonyhurst', 'heliographic_carrington',
-                 'heliocentric', 'helioprojective',
+                 'heliocentric', 'helioprojective', 'helioprojectiveradial',
                  'heliocentricearthecliptic', 'geocentricsolarecliptic',
                  'heliocentricinertial', 'geocentricearthequatorial',
+                 'geomagnetic', 'solarmagnetic', 'geocentricsolarmagnetospheric',
                  'gcrs', 'precessedgeocentric', 'geocentrictrueecliptic', 'geocentricmeanecliptic',
                  'cirs', 'altaz', 'itrs']
 
@@ -1176,9 +1385,10 @@ def _tweak_graph(docstr):
 
     # Set the nodes for SunPy frames to be white
     sunpy_frames = ['HeliographicStonyhurst', 'HeliographicCarrington',
-                    'Heliocentric', 'Helioprojective',
+                    'Heliocentric', 'Helioprojective', 'HelioprojectiveRadial',
                     'HeliocentricEarthEcliptic', 'GeocentricSolarEcliptic',
-                    'HeliocentricInertial', 'GeocentricEarthEquatorial']
+                    'HeliocentricInertial', 'GeocentricEarthEquatorial',
+                    'Geomagnetic', 'SolarMagnetic', 'GeocentricSolarMagnetospheric']
     for frame in sunpy_frames:
         output = output.replace(frame + ' [', frame + ' [fillcolor=white ')
 

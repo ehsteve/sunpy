@@ -30,6 +30,7 @@ goes_filepath = get_test_filepath('go1520110607.fits')
 psp_filepath = get_test_filepath('psp_fld_l2_mag_rtn_1min_20200104_v02.cdf')
 swa_filepath = get_test_filepath('solo_L1_swa-pas-mom_20200706_V01.cdf')
 fermi_gbm_filepath = get_test_filepath('gbm.fits')
+hsi_filepath = get_test_filepath('hsi_image_20101016_191218.fits')
 
 
 @pytest.mark.filterwarnings('ignore:Unknown units')
@@ -97,6 +98,13 @@ def test_from_url():
     assert isinstance(ts[0], sunpy.timeseries.GenericTimeSeries)
     assert isinstance(ts[1], sunpy.timeseries.GenericTimeSeries)
 
+@pytest.mark.remote_data
+def test_from_uri():
+    # Test read on PSP file saved on public sumpy s3 repository.
+    uri = ('s3://data.sunpy.org/sunpy/v1/psp_fld_l2_mag_rtn_1min_20200104_v02.cdf')
+    ts = sunpy.timeseries.TimeSeries(uri, fsspec_kwargs={'anon':True})
+    assert isinstance(ts[0], sunpy.timeseries.GenericTimeSeries)
+    assert isinstance(ts[1], sunpy.timeseries.GenericTimeSeries)
 
 def test_read_cdf():
     ts_psp = sunpy.timeseries.TimeSeries(psp_filepath)
@@ -165,7 +173,7 @@ def test_meta_from_fits_header():
     data = DataFrame(intensity, index=times, columns=['intensity'])
 
     # Use a FITS file HDU using sunpy.io
-    hdulist = sunpy.io.read_file(goes_filepath)
+    hdulist = sunpy.io._file_tools.read_file(goes_filepath)
     meta = hdulist[0].header
     meta_md = MetaDict(OrderedDict(meta))
     ts_hdu_meta = sunpy.timeseries.TimeSeries(data, meta, units)
@@ -176,7 +184,7 @@ def test_meta_from_fits_header():
     hdulist = fits.open(goes_filepath)
     meta = hdulist[0].header
     hdulist.close()
-    meta_md = MetaDict(sunpy.io.header.FileHeader(meta))
+    meta_md = MetaDict(sunpy.io._header.FileHeader(meta))
     ts_hdu_meta = sunpy.timeseries.TimeSeries(data, meta, units)
     ts_md_meta = sunpy.timeseries.TimeSeries(data, meta_md, units)
     assert ts_hdu_meta == ts_md_meta
@@ -349,7 +357,7 @@ def test_table_to_ts():
     # ToDo: Try an incompatible table
     dual_index_table = Table([times, intensity], names=['time', 'intensity'], meta=tbl_meta)
     dual_index_table.add_index(('time', 'intensity'))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Invalid input Table, TimeSeries doesn't support conversion of tables with more then one index column."):
         sunpy.timeseries.TimeSeries((dual_index_table, meta, units))
 
 
@@ -368,6 +376,7 @@ def test_invalid_manual_data():
     with pytest.raises(NoMatchError, match=""):
         sunpy.timeseries.TimeSeries(data, meta)
 
+
 @pytest.mark.filterwarnings('ignore:"silence_errors" was deprecated in version 5')
 def test_invalid_filepath():
     invalid_filepath = os.path.join(rootdir, 'invalid_filepath_here')
@@ -379,6 +388,7 @@ def test_invalid_filepath():
     # Now with allow_errors kwarg set
     with pytest.raises(ValueError, match='Did not find any files'):
         sunpy.timeseries.TimeSeries(invalid_filepath, allow_errors=True)
+
 
 @pytest.mark.filterwarnings('ignore:"silence_errors" was deprecated in version 5')
 def test_invalid_file():
@@ -422,8 +432,8 @@ def test_validate_meta_basic():
 
 
 def test_validate_meta_astropy_header():
-    # Manually open a goes file for the sunpy.io.header.FileHeader test
-    hdus = sunpy.io.read_file(goes_filepath)
+    # Manually open a goes file for the sunpy.io._header.FileHeader test
+    hdus = sunpy.io._file_tools.read_file(goes_filepath)
     header = hdus[0].header
     assert sunpy.timeseries.TimeSeries._is_metadata(header)
     # Manually open a goes file for the astropy.io.fits.header.Header test
@@ -431,3 +441,7 @@ def test_validate_meta_astropy_header():
     header = hdulist[0].header
     hdulist.close()
     assert sunpy.timeseries.TimeSeries._is_metadata(header)
+
+def test_get_matching_widget():
+    with pytest.raises(NoMatchError, match="failed to validate"):
+        sunpy.timeseries.TimeSeries(hsi_filepath)

@@ -10,6 +10,7 @@ from astropy.io import fits
 
 from sunpy.map import Map
 from sunpy.map.sources import WISPRMap
+from .helpers import _test_private_date_setters
 
 
 @pytest.fixture
@@ -256,11 +257,23 @@ def test_is_datasource_for(wispr_map):
 def test_observer_coordinate(wispr_map):
     obs_coord = wispr_map.observer_coordinate
     assert isinstance(obs_coord, SkyCoord)
-    assert obs_coord.obstime.isot == wispr_map.meta['date-obs']
+    assert obs_coord.obstime.isot == wispr_map.meta['date-avg']
 
 
 def test_observatory(wispr_map):
     assert wispr_map.observatory == "Parker Solar Probe"
+
+
+def test_reference_date(wispr_map):
+    assert wispr_map.reference_date.isot == "2020-01-25T00:08:20.842"
+
+
+def test_date(wispr_map):
+    assert wispr_map.date.isot == "2020-01-25T00:02:29.618"
+
+
+def test_private_date_setters(wispr_map):
+    _test_private_date_setters(wispr_map)
 
 
 def test_measurement(wispr_map):
@@ -275,16 +288,31 @@ def test_exposure_time(wispr_map):
     assert wispr_map.exposure_time == u.Quantity(700, 's')
 
 
-def test_level_number(wispr_map):
+def test_processing_level(wispr_map):
     assert wispr_map.processing_level == 1
+
+    for value, expected in [
+            ('L1', 1),
+            ('L2', 2),
+            ('L2b', '2b'),
+            ('L3', 3),
+            ('LW', 'W')]:
+        wispr_map.meta['level'] = value
+        assert wispr_map.processing_level == expected
 
 
 def test_detector(wispr_map):
-    assert wispr_map.detector == 2
+    assert wispr_map.detector == 'Outer'
+
+    wispr_map.meta['DETECTOR'] = 1
+    assert wispr_map.detector == 'Inner'
+
+    wispr_map.meta['DETECTOR'] = 'other_val'
+    assert wispr_map.detector == 'other_val'
 
 
 def test_unit(wispr_map):
-    assert wispr_map.unit == u.Unit('ct')
+    assert wispr_map.unit == u.Unit('DN')
 
 
 def test_norm_clip(wispr_map):
@@ -293,7 +321,7 @@ def test_norm_clip(wispr_map):
 
 
 def test_name(wispr_map):
-    assert wispr_map.name == 'WISPR 2 2020-01-25 00:02:29'
+    assert wispr_map.name == 'WISPR Outer 2020-01-25 00:02:29'
 
 
 def test_wcs(wispr_map):

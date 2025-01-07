@@ -3,9 +3,9 @@ import numpy as np
 import pytest
 
 import astropy.units as u
-from astropy.coordinates import Longitude, SkyCoord
+from astropy.coordinates import SkyCoord
 from astropy.tests.helper import assert_quantity_allclose
-from astropy.time import TimeDelta
+from astropy.time import Time, TimeDelta
 
 import sunpy.map
 from sunpy.coordinates import frames, transform_with_sun_center
@@ -22,6 +22,7 @@ from sunpy.physics.differential_rotation import (
     differential_rotate,
     solar_rotate_coordinate,
 )
+from sunpy.util.exceptions import SunpyDeprecationWarning
 
 # Please note the numbers in these tests are not checked for physical
 # accuracy, only that they are the values the function was outputting upon
@@ -84,49 +85,9 @@ def seconds_per_day():
     return 24 * 60 * 60.0 * u.s
 
 
-def test_single(seconds_per_day):
-    rot = diff_rot(10 * seconds_per_day, 30 * u.deg)
-    assert_quantity_allclose(rot, 136.8216 * u.deg, rtol=1e-3)
-
-
-def test_array(seconds_per_day):
-    rot = diff_rot(10 * seconds_per_day, np.linspace(-70, 70, 2) * u.deg)
-    assert_quantity_allclose(rot, Longitude(np.array([110.2725, 110.2725]) * u.deg), rtol=1e-3)
-
-
-def test_synodic(seconds_per_day):
-    rot = diff_rot(10 * seconds_per_day, 30 * u.deg, rot_type='howard', frame_time='synodic')
-    assert_quantity_allclose(rot, 126.9656 * u.deg, rtol=1e-3)
-
-
-def test_sidereal(seconds_per_day):
-    rot = diff_rot(10 * seconds_per_day, 30 * u.deg, rot_type='howard', frame_time='sidereal')
-    assert_quantity_allclose(rot, 136.8216 * u.deg, rtol=1e-3)
-
-
-def test_howard(seconds_per_day):
-    rot = diff_rot(10 * seconds_per_day, 30 * u.deg, rot_type='howard')
-    assert_quantity_allclose(rot, 136.8216 * u.deg, rtol=1e-3)
-
-
-def test_allen(seconds_per_day):
-    rot = diff_rot(10 * seconds_per_day, 30 * u.deg, rot_type='allen')
-    assert_quantity_allclose(rot, 136.9 * u.deg, rtol=1e-3)
-
-
-def test_snodgrass(seconds_per_day):
-    rot = diff_rot(10 * seconds_per_day, 30 * u.deg, rot_type='snodgrass')
-    assert_quantity_allclose(rot, 135.4232 * u.deg, rtol=1e-3)
-
-
-def test_rigid(seconds_per_day):
-    rot = diff_rot(10 * seconds_per_day, [0, 30, 60] * u.deg, rot_type='rigid')
-    assert_quantity_allclose(rot, [141.844 * u.deg] * 3, rtol=1e-3)
-
-
-def test_fail(seconds_per_day):
-    with pytest.raises(ValueError):
-        diff_rot(10 * seconds_per_day, 30 * u.deg, rot_type='garbage')
+def test_diff_rot_deprecated_warning(seconds_per_day):
+    with pytest.warns(SunpyDeprecationWarning, match='The diff_rot function is deprecated'):
+        diff_rot(10 * seconds_per_day, 30 * u.deg)
 
 
 def test_solar_rotate_coordinate():
@@ -139,15 +100,15 @@ def test_solar_rotate_coordinate():
     new_observer = get_earth(new_time)
 
     # Test that when both the observer and the time are specified, an error is raised.
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Either the 'observer' or the 'time' keyword must be specified, but not both simultaneously."):
         d = solar_rotate_coordinate(c, observer=observer, time=new_time)
 
     # Test that the code properly filters the observer keyword
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="The 'observer' must be an astropy.coordinates.BaseCoordinateFrame or an astropy.coordinates.SkyCoord."):
         d = solar_rotate_coordinate(c, observer='earth')
 
     # Test that the code properly filters the time keyword
-    with pytest.raises(ValueError):  # noqa: PT012
+    with pytest.raises(ValueError, match="Input values did not match any of the formats where the format keyword is optional"):
         with pytest.warns(UserWarning, match="Using 'time' assumes an Earth-based observer"):
             d = solar_rotate_coordinate(c, time='noon')
 
@@ -170,6 +131,16 @@ def test_solar_rotate_coordinate():
 
         # Test that the SkyCoordinate is Helioprojective
         assert isinstance(d.frame, frames.Helioprojective)
+
+    # Test that the function works correctly with a HGS coordinate.
+    earth_coord = get_earth(Time("2022-03-30"))
+    coord_hpc = SkyCoord(100*u.arcsec, 100*u.arcsec, frame=frames.Helioprojective(observer=earth_coord))
+
+    coord_hgs = coord_hpc.transform_to(frames.HeliographicStonyhurst)
+    with pytest.warns(UserWarning, match="Using 'time' assumes an Earth-based observer"):
+        rotated_coord_hgs = solar_rotate_coordinate(coord_hgs, time=Time("2022-03-31"))
+
+    assert isinstance(rotated_coord_hgs.frame, frames.HeliographicStonyhurst)
 
 
 def test_consistency_with_rotatedsunframe():
@@ -197,7 +168,7 @@ def test_consistency_with_rotatedsunframe():
 def test_differential_rotate_observer_all_off_disk(all_off_disk_map):
     # Test a map that is entirely off the disk of the Sun
     # Should report an error
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="The entire map is off disk. No data to differentially rotate."):
         differential_rotate(all_off_disk_map)
 
 
@@ -280,7 +251,7 @@ def test_differential_rotate_time_off_disk(all_off_disk_map):
     # Test a map that is entirely off the disk of the Sun
     # Should report an error
     new_time = all_off_disk_map.date + 48*u.hr
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="The entire map is off disk. No data to differentially rotate."):
         differential_rotate(all_off_disk_map, time=new_time)
 
 
@@ -294,12 +265,12 @@ def test_get_new_observer(aia171_test_map):
 
     # The observer time is set along with other definitions of time
     for time in (rotation_interval, new_time, time_delta):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Either the 'observer' or the 'time' keyword must be specified, but not both simultaneously."):
             new_observer = _get_new_observer(initial_obstime, observer, time)
 
     # Obstime property is present but the value is None
     observer_obstime_is_none = SkyCoord(12*u.deg, 46*u.deg, frame=frames.HeliographicStonyhurst)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="The observer 'obstime' property must not be None."):
         new_observer = _get_new_observer(None, observer_obstime_is_none, None)
 
     # When the observer is set, it gets passed back out
@@ -326,7 +297,7 @@ def test_get_new_observer(aia171_test_map):
                                        observer.transform_to(frames.HeliographicStonyhurst).radius.to(u.au).value, decimal=3)
 
     # The observer and the time cannot both be None
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Either the 'observer' or the 'time' keyword must not be None."):
         new_observer = _get_new_observer(initial_obstime, None, None)
 
 
@@ -378,7 +349,7 @@ def test_get_extreme_position():
         assert _get_extreme_position(coords, 'Tx', operator=np.nanmax) == 1
         assert _get_extreme_position(coords, 'Ty', operator=np.nanmax) == 2
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="The \"axis\" argument must be either \"Tx\" or \"Ty\""):
         _get_extreme_position(coords, 'lon', operator=np.nanmax)
 
 

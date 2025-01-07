@@ -32,6 +32,10 @@ SUNPY_FRAME_CONVERTERS = [
         "sunpy.coordinates.frames.Helioprojective"
     ),
     SunpyFrameConverter(
+        "tag:sunpy.org:sunpy/coordinates/frames/helioprojectiveradial-*",
+        "sunpy.coordinates.frames.HelioprojectiveRadial"
+    ),
+    SunpyFrameConverter(
         "tag:sunpy.org:sunpy/coordinates/frames/heliocentricinertial-*",
         "sunpy.coordinates.frames.HeliocentricInertial"
     ),
@@ -50,5 +54,17 @@ SUNPY_FRAME_CONVERTERS = [
     SunpyFrameConverter(
         "tag:sunpy.org:sunpy/coordinates/frames/geocentricearthequatorial-*",
         "sunpy.coordinates.frames.GeocentricEarthEquatorial"
+    ),
+    SunpyFrameConverter(
+        "tag:sunpy.org:sunpy/coordinates/frames/geomagnetic-*",
+        "sunpy.coordinates.frames.Geomagnetic"
+    ),
+    SunpyFrameConverter(
+        "tag:sunpy.org:sunpy/coordinates/frames/solarmagnetic-*",
+        "sunpy.coordinates.frames.SolarMagnetic"
+    ),
+    SunpyFrameConverter(
+        "tag:sunpy.org:sunpy/coordinates/frames/geocentricsolarmagnetospheric-*",
+        "sunpy.coordinates.frames.GeocentricSolarMagnetospheric"
     ),
 ]

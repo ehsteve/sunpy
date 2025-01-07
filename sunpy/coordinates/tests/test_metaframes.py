@@ -6,14 +6,14 @@ from hypothesis import given, settings
 import astropy.units as u
 from astropy.coordinates import HeliocentricMeanEcliptic, SkyCoord, frame_transform_graph
 from astropy.tests.helper import assert_quantity_allclose
-from astropy.time import Time
+from astropy.time import Time, TimeDelta
 
 import sunpy.coordinates.frames as f
 from sunpy.coordinates.metaframes import RotatedSunFrame, _rotatedsun_cache
 from sunpy.coordinates.tests.helpers import assert_longitude_allclose
 from sunpy.coordinates.tests.strategies import latitudes, longitudes, times
-from sunpy.physics.differential_rotation import diff_rot
 from sunpy.sun import constants
+from sunpy.sun.models import differential_rotation
 
 # NorthOffsetFrame is tested in test_offset_frame.py
 
@@ -88,7 +88,7 @@ def test_class_creation(indirect_fixture):
     assert base_class.__name__ in rot_class.__name__
 
     # Check that the base class is in fact the specified class
-    assert type(rot_frame.base) == base_class
+    assert type(rot_frame.base) == base_class  # NOQA: E721
 
     # Check that the new class does *not* have the `obstime` frame attribute
     assert 'obstime' not in rot_frame.frame_attributes
@@ -114,7 +114,7 @@ def test_as_base(rot_hgs):
     # Check the as_base() method
     a = rot_hgs[1].as_base()
 
-    assert type(a) == type(rot_hgs[1].base)  # noqa: E721
+    assert type(a) == type(rot_hgs[1].base)  # NOQA: E721
 
     assert_longitude_allclose(a.lon, rot_hgs[1].lon)
     assert_quantity_allclose(a.lat, rot_hgs[1].lat)
@@ -127,7 +127,7 @@ def test_no_base():
 
 
 def test_no_obstime():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="The base coordinate frame must have a defined `obstime`"):
         RotatedSunFrame(base=f.HeliographicStonyhurst(obstime=None))
 
 
@@ -144,6 +144,42 @@ def test_rotated_time_to_duration():
     r2 = RotatedSunFrame(base=f.HeliographicStonyhurst(obstime='2001-01-02'),
                          rotated_time='2001-01-01')
     assert_quantity_allclose(r2.duration, -1*u.day)
+
+
+def test_duration_from_timedelta():
+    base_frame = f.HeliographicStonyhurst(obstime='2001-01-01')
+
+    duration_timedelta = TimeDelta(4 * u.day)
+    r = RotatedSunFrame(base=base_frame, duration=duration_timedelta)
+
+    # Verify that the duration is correctly converted to a quantity in days
+    assert_quantity_allclose(r.duration, 4 * u.day)
+
+
+def test_duration_with_quantity_hours():
+    base_frame = f.HeliographicStonyhurst(obstime='2001-01-01')
+
+    # Testing with Quantity in hours (conversion needed)
+    duration_quantity = 96 * u.hour  # 4 days in hours
+    r = RotatedSunFrame(base=base_frame, duration=duration_quantity)
+    assert_quantity_allclose(r.duration, 4 * u.day)
+
+
+def test_both_duration_and_rotated_time_provided():
+    base_frame = f.HeliographicStonyhurst(obstime='2001-01-01')
+
+    with pytest.raises(ValueError, match="Specify either `duration` or `rotated_time`, not both."):
+        RotatedSunFrame(base=base_frame, duration=TimeDelta(1*u.day), rotated_time=Time('2001-01-02'))
+
+
+def test_duration_calculation():
+
+    base_time = Time('2001-01-01')
+    base_frame = f.HeliographicStonyhurst(obstime=base_time)
+    rotated_time = Time('2001-01-02')
+    r = RotatedSunFrame(base=base_frame, rotated_time=rotated_time)
+    expected_duration = (rotated_time.utc - base_time).to('day')
+    assert r.duration == expected_duration
 
 
 def test_rotated_time_property():
@@ -170,7 +206,7 @@ def test_base_skycoord(rot_hgs):
     s = SkyCoord(1*u.deg, 2*u.deg, 3*u.AU, frame=f.HeliographicStonyhurst, obstime='2001-01-01')
     r = RotatedSunFrame(base=s)
 
-    assert type(r) == type(rot_hgs[1])  # noqa: E721
+    assert type(r) == type(rot_hgs[1])  # NOQA: E721
     assert r.has_data
     assert not r.base.has_data
 
@@ -197,7 +233,7 @@ def test_alternate_rotation_model():
        obstime=times(), rotated_time1=times(), rotated_time2=times())
 @settings(deadline=None, max_examples=10)
 def test_rotatedsun_transforms(frame, lon, lat, obstime, rotated_time1, rotated_time2):
-    # Tests the transformations (to, from, and loopback) for consistency with `diff_rot` output
+    # Tests the transformations (to, from, and loopback) for consistency with `differential_rotation` output
 
     if hasattr(frame, 'observer'):
         base = frame(lon=lon, lat=lat, observer='earth', obstime=obstime)
@@ -213,7 +249,7 @@ def test_rotatedsun_transforms(frame, lon, lat, obstime, rotated_time1, rotated_
     rsf1 = RotatedSunFrame(base=base, rotated_time=rotated_time1)
     result1 = rsf1.transform_to(base)
 
-    desired_delta_lon1 = diff_rot((rotated_time1 - obstime).to(u.day), lat)
+    desired_delta_lon1 = differential_rotation((rotated_time1 - obstime).to(u.day), lat)
 
     assert_longitude_allclose(result1.lon, rsf1.lon + desired_delta_lon1, atol=1e-5*u.deg)
     assert_quantity_allclose(base.lat, result1.lat, atol=1e-10*u.deg)
@@ -224,7 +260,7 @@ def test_rotatedsun_transforms(frame, lon, lat, obstime, rotated_time1, rotated_
     rsf2 = RotatedSunFrame(base=base, rotated_time=rotated_time2)
     result2 = base.transform_to(rsf2)
 
-    desired_delta_lon2 = -diff_rot((rotated_time2 - obstime).to(u.day), lat)
+    desired_delta_lon2 = -differential_rotation((rotated_time2 - obstime).to(u.day), lat)
 
     assert_longitude_allclose(result2.lon, rsf2.lon + desired_delta_lon2, atol=1e-5*u.deg)
     assert_quantity_allclose(base.lat, result2.lat, atol=1e-10*u.deg)
@@ -271,7 +307,7 @@ def test_obstime_change_loopback(indirect_fixture):
 
 @pytest.mark.parametrize("indirect_fixture",
                          ["rot_hgs", "rot_hgc", "rot_hci", "rot_hcc", "rot_hpc", "rot_hme"], indirect=True)
-def test_tranformation_to_nonobserver_frame(indirect_fixture):
+def test_transformation_to_nonobserver_frame(indirect_fixture):
     base_class, rot_frame = indirect_fixture
 
     hgs_frame = f.HeliographicStonyhurst(obstime='2020-01-01')

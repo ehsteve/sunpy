@@ -39,6 +39,9 @@ Dataretriever
 .. automodapi:: sunpy.net.dataretriever.attrs.goes
    :headings: ^"
 
+.. automodapi:: sunpy.net.dataretriever.attrs.adapt
+   :headings: ^"
+
 JSOC
 ----
 
@@ -76,17 +79,11 @@ HELIO
 .. automodapi:: sunpy.net.helio.attrs
    :headings: ^"
 
-Helioviewer
------------
-
-.. automodapi:: sunpy.net.helioviewer
-   :headings: ^"
 
 Internal Classes and Functions
 ==============================
 
-These classes and functions are designed to be used to help develop new clients
-for `sunpy.net.Fido`.
+These classes and functions are designed to be used to help develop new clients for `sunpy.net.Fido`.
 
 .. automodapi:: sunpy.net.base_client
 
@@ -95,3 +92,5 @@ for `sunpy.net.Fido`.
 .. automodapi:: sunpy.net.attr
 
 .. automodapi:: sunpy.net.scraper
+
+.. automodapi:: sunpy.net.scraper_utils

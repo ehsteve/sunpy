@@ -82,26 +82,24 @@ We can select just this column:
 .. code-block:: python
 
    >>> result["hek"]["frm_name"]  # doctest: +REMOTE_DATA
-   <QueryResponseColumn name='frm_name' dtype='str32' length=19>
-                             asainz
-                             asainz
-                             asainz
-                             asainz
-                             asainz
-                             asainz
-                             asainz
-                  SSW Latest Events
-                               SWPC
-   Flare Detective - Trigger Module
-   Flare Detective - Trigger Module
-                               SWPC
-                  SSW Latest Events
-   Flare Detective - Trigger Module
-   Flare Detective - Trigger Module
-   Flare Detective - Trigger Module
-   Flare Detective - Trigger Module
-   Flare Detective - Trigger Module
-   Flare Detective - Trigger Module
+    <QueryResponseColumn name='frm_name' dtype='str32' length=19>
+                              asainz
+                              asainz
+                              asainz
+                              asainz
+                              asainz
+                              asainz
+                              asainz
+                   SSW Latest Events
+                                 ...
+                                SWPC
+                   SSW Latest Events
+    Flare Detective - Trigger Module
+    Flare Detective - Trigger Module
+    Flare Detective - Trigger Module
+    Flare Detective - Trigger Module
+    Flare Detective - Trigger Module
+    Flare Detective - Trigger Module
 
 It is likely each flare on the Sun was actually detected multiple times by many different methods.
 
@@ -154,10 +152,10 @@ Let's look further at the FRM attribute:
     |  Data descriptors defined here:
     |
     |  __dict__
-    |      dictionary for instance variables (if defined)
+    |      dictionary for instance variables
     |
     |  __weakref__
-    |      list of weak references to the object (if defined)
+    |      list of weak references to the object
     |
     |  ----------------------------------------------------------------------
     |  Data and other attributes defined here:
@@ -337,7 +335,7 @@ You can also go one step further back, passing in a list of HEK attribute object
 
 .. code-block:: python
 
-   >>> q = h2v.full_query((a.Time('2011/08/09 07:23:56', '2011/08/09 12:40:29'), a.hek.EventType('FL')))  # doctest: +SKIP
+   >>> vso_query = h2v.full_query((a.Time('2011/08/09 07:00:00', '2011/08/09 07:15:00'), a.hek.EventType('FL')))  # doctest: +REMOTE_DATA
 
 The full capabilities of the HEK query module can be used in this function (see above).
 

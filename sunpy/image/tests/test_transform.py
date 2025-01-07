@@ -7,7 +7,7 @@ from skimage import transform as tf
 from astropy.coordinates.matrix_utilities import rotation_matrix
 
 from sunpy.image.transform import _rotation_registry, affine_transform
-from sunpy.tests.helpers import figure_test
+from sunpy.tests.helpers import figure_test, skip_windows
 from sunpy.util import SunpyUserWarning
 
 # Tolerance for tests
@@ -61,7 +61,7 @@ def compare_results(expect, result, allclose=True):
 
 
 @pytest.mark.parametrize(('angle', 'k'), [(90.0, 1), (-90.0, -1), (-270.0, 1),
-                                      (-90.0, 3), (360.0, 0), (-360.0, 0)])
+                                          (-90.0, 3), (360.0, 0), (-360.0, 0)])
 def test_rotation(original, angle, k):
     # Test rotation against expected outcome
     angle = np.radians(angle)
@@ -83,7 +83,7 @@ def test_rotation(original, angle, k):
 
 
 @pytest.mark.parametrize(('angle', 'k'), [(90.0, 1), (-90.0, -1), (-270.0, 1),
-                                      (-90.0, 3), (360.0, 0), (-360.0, 0)])
+                                          (-90.0, 3), (360.0, 0), (-360.0, 0)])
 def test_skimage_rotation(original, angle, k):
     # Test rotation against expected outcome
     angle = np.radians(angle)
@@ -156,8 +156,8 @@ def test_scale(original, scale_factor):
 
 
 @pytest.mark.parametrize(('angle', 'dx', 'dy', 'scale_factor'), [(90, -100, 40, 0.25),
-                                                         (-90, 40, -80, 0.75),
-                                                         (180, 20, 50, 1.5)])
+                                                                 (-90, 40, -80, 0.75),
+                                                                 (180, 20, 50, 1.5)])
 def test_all(original, angle, dx, dy, scale_factor):
     """
     Tests to make sure that combinations of scaling, shifting and rotation
@@ -245,6 +245,7 @@ def test_float32(identity):
     assert np.issubdtype(out_arr.dtype, np.float32)
 
 
+@skip_windows
 def test_reproducible_matrix_multiplication():
     # Test whether matrix multiplication involving a large matrix always gives the same answer
     # This indirectly tests whichever BLAS/LAPACK libraries that NumPy is linking to (if any)
@@ -317,7 +318,7 @@ def test_nans(rot30):
         axs[i, 0].imshow(image_with_nans, vmin=-1.1, vmax=1.1)
         for j in range(6):
             if j not in _rotation_registry[method].allowed_orders:
-                with pytest.raises(ValueError):
+                with pytest.raises(ValueError, match=f"^{j} is one of the allowed orders for method '{method}': {set(_rotation_registry[method].allowed_orders)}$"):
                     affine_transform(image_with_nans, rot30, order=j, method=method, missing=np.nan)
                 axs[i, j+1].remove()
             else:
@@ -338,7 +339,7 @@ def test_endian(method, order, rot30):
 
     # Test that the rotation output values do not change with input byte order
     native = np.ones((10, 10))
-    swapped = native.byteswap().newbyteorder()
+    swapped = native.view(native.dtype.newbyteorder()).byteswap()
 
     rot_native = affine_transform(native, rot30, order=order, method=method, missing=0)
     rot_swapped = affine_transform(swapped, rot30, order=order, method=method, missing=0)

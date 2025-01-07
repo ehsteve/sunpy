@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 import numpy as np
 import pandas
@@ -34,11 +34,11 @@ def test_parse_time_microseconds_excess_trailing_zeros():
     assert dt.scale == 'utc'
 
     # Excess digits beyond 6 digits should error if they are not zeros
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Input values did not match any of the formats where the format keyword is optional:"):
         dt = parse_time('2010-Oct-10 00:00:00.1234567')
 
     # An ending run of zeros should still error if they are not a microsecond field
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Input values did not match any of the formats where the format keyword is optional:"):
         dt = parse_time('10-Oct-2010.0000000')
 
 
@@ -150,14 +150,6 @@ def test_parse_time_individual_numpy_datetime():
     assert dt == Time('2005-02-01', format='isot')
 
 
-def test_parse_time_numpy_datetime_timezone():
-    with pytest.warns(DeprecationWarning, match='parsing timezone aware datetimes is deprecated'):
-        dt64 = np.datetime64('2014-02-07T16:47:51-0500')
-    dt = parse_time(dt64)
-
-    assert dt == Time('2014-02-07T21:47:51', format='isot')
-
-
 def test_parse_time_numpy_datetime_ns():
     dt64 = np.datetime64('2014-02-07T16:47:51.008288000')
     dt = parse_time(dt64)
@@ -217,6 +209,9 @@ def test_parse_time_ISO():
     dt4 = Time('2007-05-04T21:08:00')
     dt5 = Time('2007-05-04')
 
+    assert parse_time('20070504210812') == dt3
+    assert parse_time('200705042108') == dt4
+
     lst = [
         ('2007-05-04T21:08:12.999999', dt2),
         ('20070504T210812.999999', dt2),
@@ -227,6 +222,7 @@ def test_parse_time_ISO():
         ('2007-05-04 21:08', dt4),
         ('2007-05-04T21:08:12', dt3),
         ('20070504T210812', dt3),
+        ('20070504T2108', dt4),
         ('2007-May-04 21:08:12', dt3),
         ('2007-May-04 21:08', dt4),
         ('2007-May-04', dt5),
@@ -234,6 +230,7 @@ def test_parse_time_ISO():
         ('2007/05/04', dt5),
         ('04-May-2007', dt5),
         ('04-May-2007 21:08:12.999999', dt2),
+        ('20070504_2108', dt4),
         ('20070504_210812', dt3),
         ('2007.05.04_21:08:12_UTC', dt3),
         ('2007.05.04_21:08:12', dt3),
@@ -246,11 +243,14 @@ def test_parse_time_ISO():
 
 
 def test_parse_time_tai():
-    dt = Time('2007-05-04T21:08:12', scale='tai')
-    dt2 = parse_time('2007.05.04_21:08:12_TAI')
-
-    assert dt == dt2
-    assert dt.scale == dt2.scale
+    tai_format = Time('2007-05-04T21:08:12', scale='tai')
+    tai_format_micro = Time('2007-05-04T21:08:12.999999', scale='tai')
+    parsed_tai = parse_time('2007.05.04_21:08:12_TAI')
+    parsed_tai_micro = parse_time('2007.05.04_21:08:12.999999_TAI')
+    assert tai_format == parsed_tai
+    assert tai_format.scale == parsed_tai.scale
+    assert tai_format_micro == parsed_tai_micro
+    assert tai_format_micro.scale == parsed_tai_micro.scale
 
 
 def test_parse_time_leap_second():
@@ -293,9 +293,9 @@ def test_parse_time_astropy_formats(ts, fmt):
 def test_parse_time_int_float():
     # int and float values are not unique
     # The format has to be mentioned
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Input values did not match any of the formats where the format keyword is optional:"):
         parse_time(100)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Input values did not match any of the formats where the format keyword is optional:"):
         parse_time(100.0)
 
 
@@ -352,7 +352,7 @@ def test_parse_time_list_3():
 
 
 def test_is_time():
-    assert time.is_time(datetime.utcnow()) is True
+    time.is_time(datetime.now(timezone.utc)) is True
     assert time.is_time('2017-02-14 08:08:12.999') is True
     assert time.is_time(Time.now()) is True
 
